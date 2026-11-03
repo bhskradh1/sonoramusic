@@ -1,3 +1,5 @@
+import { fetchYoutubeAudioBlob } from './youtubeAudioApi';
+
 /**
  * Permanent playlist downloads backed by IndexedDB.
  * Individual tracks are intentionally not exposed as download operations;
@@ -116,89 +118,6 @@ const requestPersistentStorage = async () => {
   } catch {
     // Persistent-storage permission is browser-controlled and best-effort.
   }
-};
-
-const getAudioApiUrl = (): string => {
-  const configured = import.meta.env.VITE_YTMUSIC_AUDIO_API_URL?.trim();
-  return configured || 'https://melodiya-your-sound.vercel.app/api/youtube-audio';
-};
-
-interface AudioApiResponse {
-  streamUrl?: string;
-  mimeType?: string;
-  proxyStreamUrl?: string;
-  error?: string;
-}
-
-const resolveApiUrl = (candidate: string, apiUrl: string) =>
-  new URL(candidate, apiUrl.startsWith('http') ? apiUrl : window.location.origin).toString();
-
-const fetchAudioBlob = async (videoId: string): Promise<Blob> => {
-  const apiUrl = getAudioApiUrl();
-  const separator = apiUrl.includes('?') ? '&' : '?';
-  const streamEndpoint = `${apiUrl}${separator}id=${encodeURIComponent(videoId)}&stream=1`;
-  let binaryEndpointError: Error | null = null;
-
-  // Prefer the serverless route's binary response so range/referrer headers are
-  // handled by our API. If the hosting provider times out on a long download,
-  // fall back to the resolver's CORS-enabled CDN URL below.
-  try {
-    const binaryResponse = await fetch(streamEndpoint, { cache: 'no-store' });
-    if (binaryResponse.ok) {
-      const contentType = binaryResponse.headers.get('content-type')?.split(';')[0].toLowerCase() || '';
-      if (!contentType || contentType.startsWith('audio/') || contentType === 'application/octet-stream') {
-        const binaryBlob = await binaryResponse.blob();
-        if (binaryBlob.size) {
-          return binaryBlob.type
-            ? binaryBlob
-            : new Blob([binaryBlob], { type: contentType || 'audio/mp4' });
-        }
-      }
-      binaryEndpointError = new Error('The audio API did not return a valid audio file.');
-    } else {
-      const failure = await binaryResponse.json().catch(() => ({})) as AudioApiResponse;
-      binaryEndpointError = new Error(failure.error || `Audio download failed (${binaryResponse.status}).`);
-    }
-  } catch (error) {
-    binaryEndpointError = error instanceof Error ? error : new Error('The audio API stream request failed.');
-  }
-
-  // Metadata includes a direct CDN URL and a same-origin proxy fallback. This
-  // second path avoids a serverless execution timeout for larger playlists.
-  const metadataResponse = await fetch(
-    `${apiUrl}${separator}id=${encodeURIComponent(videoId)}`,
-    { cache: 'no-store' },
-  );
-  const metadata = (await metadataResponse.json().catch(() => ({}))) as AudioApiResponse;
-  if (!metadataResponse.ok) {
-    throw new Error(metadata.error || binaryEndpointError?.message || `Could not resolve audio for ${videoId} (${metadataResponse.status}).`);
-  }
-
-  const urls = [metadata.streamUrl, metadata.proxyStreamUrl]
-    .filter((value): value is string => Boolean(value))
-    .map((value) => resolveApiUrl(value, apiUrl))
-    .filter((value, index, list) => list.indexOf(value) === index);
-  if (!urls.length) throw new Error(metadata.error || binaryEndpointError?.message || `The audio API did not return a stream URL for ${videoId}.`);
-
-  let lastError: Error | null = binaryEndpointError;
-  for (const url of urls) {
-    try {
-      const response = await fetch(url, { cache: 'no-store', mode: 'cors' });
-      if (!response.ok) throw new Error(`Audio download failed (${response.status}).`);
-      const receivedBlob = await response.blob();
-      if (!receivedBlob.size) throw new Error('The audio provider returned an empty file.');
-      const blob = receivedBlob.type
-        ? receivedBlob
-        : new Blob([receivedBlob], { type: metadata.mimeType || 'audio/mp4' });
-      if (blob.type && !blob.type.startsWith('audio/') && blob.type !== 'application/octet-stream') {
-        throw new Error('The provider returned a non-audio file.');
-      }
-      return blob;
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error('Could not download the audio file.');
-    }
-  }
-  throw lastError || new Error('Could not download this track for offline playback.');
 };
 
 const arrayBufferToBase64 = (buffer: ArrayBuffer): string => {
@@ -367,7 +286,7 @@ export const downloadPlaylistOffline = async (
       }
       onProgress?.({ completed, total: tracks.length, currentTitle: track.title });
       const [blob, thumbnail] = await Promise.all([
-        fetchAudioBlob(track.videoId),
+        fetchYoutubeAudioBlob(track.videoId),
         thumbnailAsBase64(track.thumbnailUrl),
       ]);
       const record: OfflineTrackRecord = {

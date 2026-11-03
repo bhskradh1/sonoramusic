@@ -1,28 +1,29 @@
 # Offline playlist downloads
 
-Melodiya stores playlist audio in the browser's IndexedDB database `melodiya_offline_library`, object store `offline_tracks`.
+Melodiya stores complete playlist audio files as Blobs in the browser's IndexedDB database `melodiya_offline_library`, object store `offline_tracks`.
 
 ## How it works
 
-- Downloads are initiated from a playlist's detail page with **Download Playlist for Offline**. There is intentionally no individual-track download action.
-- The browser requests each track's binary audio from `/api/youtube-audio?id=<video-id>&stream=1` and stores the resulting `Blob` with title, artist, duration, base64 artwork, playlist ID, track ID, and playback position.
-- The object store uses the compound key `[playlist_id, track_id]` and indexes `playlist_id` and `track_id`.
-- A playlist is marked complete only after every track has been fetched and committed. Failed downloads are rolled back, so partial playlists are not presented as available offline.
-- When `navigator.onLine` becomes false, the app switches to **Offline Library**. Search and online discovery/navigation are hidden. Playback reads the matching Blob from IndexedDB and uses a temporary `URL.createObjectURL()` URL; that temporary URL is revoked when the track changes or the player unmounts.
+- Downloads are initiated from a playlist detail page with **Download Playlist for Offline**. Downloads are playlist-level; individual-track download actions are intentionally not exposed.
+- Each track is fetched from the serverless audio API (`/api/youtube-audio?id=<video-id>&stream=1`) and saved as a Blob with title, artist, duration, artwork, playlist ID, track ID, MIME type, and playback position. The downloader falls back to resolving metadata and trying available stream/proxy URLs when the binary proxy request fails.
+- A playlist is marked complete only after every track has been fetched and stored. Failed downloads are rolled back instead of being shown as complete. The error now reports the API host or stream host that failed; it is not proof that the app can reach the upstream service.
+- When offline, the app switches to **Offline Library** and reads saved Blobs from IndexedDB. Browser/PWA playback uses a temporary object URL. The Flutter Android APK transfers the saved Blob to a temporary app file and plays it with the native audio service.
 - **Remove Offline Download** deletes all records for that playlist. Settings also includes a clear-all action.
 
-## API configuration
+## Required API deployment
 
-Set `VITE_YTMUSIC_AUDIO_API_URL` to the deployed audio API route when the frontend and API do not share an origin, for example:
+The `api/youtube-audio.ts` route is a Vercel serverless function. A static frontend host such as a static PWA deployment does not automatically run this backend route. Deploy the `api/` function to Vercel (or another compatible serverless host) and set the frontend build variable to the full deployed endpoint:
 
 ```env
-VITE_YTMUSIC_AUDIO_API_URL=https://your-deployment.example/api/youtube-audio
+VITE_YTMUSIC_AUDIO_API_URL=https://your-api-deployment.vercel.app/api/youtube-audio
 ```
 
-The API route must support its JSON resolver response and its binary `?id=<video-id>&stream=1` response. The existing `api/youtube-audio.ts` route implements both.
+Set this in the frontend host's environment settings, then rebuild/redeploy the frontend. The app tries the configured URL, the repository's legacy Vercel endpoint, and a same-origin `/api/youtube-audio` fallback. The same-origin fallback works only if the frontend's host also serves the API route. The serverless function also needs access to upstream audio resolver instances; configure `YOUTUBE_AUDIO_PIPED_INSTANCES` on the API host for a stable resolver pool. Public resolver instances can be rate-limited, moved, or unavailable.
+
+**Important:** The PWA's IndexedDB and the Flutter WebView's IndexedDB are separate browser storage areas. Download a playlist inside the same app installation where you intend to use it offline. A playlist downloaded in Chrome/PWA will not automatically appear in the Flutter APK, and vice versa.
 
 ## Storage limits
 
-The app requests persistent browser storage before downloading a playlist (`navigator.storage.persist()`). Browsers decide whether to grant that request. IndexedDB data survives ordinary reloads and connection loss, but no web app can guarantee retention if the user clears site data, uninstalls the app, resets the device, or the browser/OS evicts storage. Large playlists can use substantial device storage; remove downloads when they are no longer needed.
+The app requests persistent browser storage before downloading (`navigator.storage.persist()`), but the browser decides whether to grant it. IndexedDB data normally survives reloads and loss of connectivity; it is not guaranteed to survive clearing site data, uninstalling the app, device resets, or browser/OS storage eviction. Large playlists can use substantial device storage. Remove downloads when no longer needed.
 
-Only download and retain audio that you have the rights and permission to store offline, and ensure the upstream provider and applicable platform terms allow the requested use.
+Only download and retain audio where you have the rights and permission to store it offline, and comply with the relevant provider/platform terms.
