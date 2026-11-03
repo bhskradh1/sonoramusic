@@ -19,7 +19,9 @@ if [[ ! -d "$APP_DIR/android" ]]; then
   (cd "$APP_DIR" && flutter create --platforms=android --project-name melodiya_app --org com.melodiya --no-pub .)
 fi
 
-python3 scripts/configure-android-signing.py
+if [[ "${CONFIGURE_RELEASE_SIGNING:-0}" == "1" ]]; then
+  python3 scripts/configure-android-signing.py
+fi
 
 python3 - <<'PY'
 from pathlib import Path
