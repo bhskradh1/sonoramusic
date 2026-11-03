@@ -35,20 +35,85 @@ const STREAM_CONNECT_TIMEOUT_MS = 15_000;
 const AUDIO_CACHE = new Map<string, ResolvedAudio>();
 const RATE_LIMIT = new Map<string, number[]>();
 
-// Public Piped instances are best-effort upstreams. Override this list with
-// YOUTUBE_AUDIO_PIPED_INSTANCES (comma-separated API base URLs) in production.
+// Public Piped instances are community-operated and can become unhealthy without notice.
+// Keep a static safety net, but refresh the maintained TeamPiped list at runtime.
+const PIPED_INSTANCE_LIST_URL =
+  'https://raw.githubusercontent.com/TeamPiped/documentation/main/content/docs/public-instances/index.md';
+const PIPED_INSTANCE_LIST_TTL_MS = 15 * 60 * 1000;
+const INSTANCE_DISCOVERY_TIMEOUT_MS = 5_000;
+const INSTANCE_REQUEST_TIMEOUT_MS = 7_000;
+const INSTANCE_BATCH_SIZE = 4;
+
 const DEFAULT_PIPED_INSTANCES = [
   'https://pipedapi.kavin.rocks',
   'https://pipedapi.leptons.xyz',
   'https://pipedapi.nosebs.ru',
+  'https://pipedapi-libre.kavin.rocks',
+  'https://piped-api.privacy.com.de',
+  'https://pipedapi.adminforge.de',
+  'https://api.piped.yt',
+  'https://pipedapi.drgns.space',
+  'https://pipedapi.owo.si',
+  'https://pipedapi.ducks.party',
+  'https://piped-api.codespace.cz',
+  'https://pipedapi.reallyaweso.me',
+  'https://api.piped.private.coffee',
+  'https://pipedapi.darkness.services',
+  'https://pipedapi.orangenet.cc',
 ];
 
-const getPipedInstances = (): string[] => {
-  const configured = process.env.YOUTUBE_AUDIO_PIPED_INSTANCES
-    ?.split(',')
-    .map((value) => value.trim().replace(/\/$/, ''))
-    .filter(Boolean);
-  return configured?.length ? configured : DEFAULT_PIPED_INSTANCES;
+let cachedPipedInstances: string[] = [];
+let pipedInstancesFetchedAt = 0;
+
+const normalizePipedInstance = (candidate: string): string | null => {
+  try {
+    const url = new URL(candidate.trim());
+    if (
+      url.protocol !== 'https:' ||
+      !url.hostname.toLowerCase().includes('piped') ||
+      url.hostname === 'piped.video' ||
+      url.hostname === 'docs.piped.video'
+    ) {
+      return null;
+    }
+    return url.origin;
+  } catch {
+    return null;
+  }
+};
+
+const parsePipedInstances = (document: string): string[] => {
+  const matches = document.match(/https:\/\/[a-z0-9.-]*piped[a-z0-9.-]*\.[a-z]{2,}/gi) || [];
+  return [...new Set(matches.map(normalizePipedInstance).filter((value): value is string => Boolean(value)))];
+};
+
+const getPipedInstances = async (): Promise<string[]> => {
+  const now = Date.now();
+  if (cachedPipedInstances.length && now - pipedInstancesFetchedAt < PIPED_INSTANCE_LIST_TTL_MS) {
+    return cachedPipedInstances;
+  }
+
+  const configured = (process.env.YOUTUBE_AUDIO_PIPED_INSTANCES || '')
+    .split(',')
+    .map((value) => normalizePipedInstance(value))
+    .filter((value): value is string => Boolean(value));
+
+  let discovered: string[] = [];
+  try {
+    const response = await fetch(PIPED_INSTANCE_LIST_URL, {
+      headers: { Accept: 'text/plain' },
+      signal: AbortSignal.timeout(INSTANCE_DISCOVERY_TIMEOUT_MS),
+      cache: 'no-store',
+    });
+    if (response.ok) discovered = parsePipedInstances(await response.text());
+    else console.warn('Piped instance discovery returned:', response.status);
+  } catch (error) {
+    console.warn('Piped instance discovery failed:', error instanceof Error ? error.message : error);
+  }
+
+  cachedPipedInstances = [...new Set([...configured, ...discovered, ...DEFAULT_PIPED_INSTANCES])];
+  pipedInstancesFetchedAt = now;
+  return cachedPipedInstances;
 };
 
 const setCommonHeaders = (res: ServerResponse) => {
@@ -97,83 +162,98 @@ const resolveAudio = async (videoId: string, forceRefresh = false): Promise<Reso
   if (!forceRefresh && cached && cached.expiresAt > Date.now()) return cached;
   AUDIO_CACHE.delete(videoId);
 
+  const instances = await getPipedInstances();
   const errors: string[] = [];
-  for (const instanceBase of getPipedInstances()) {
-    try {
-      const response = await fetch(`${instanceBase}/streams/${encodeURIComponent(videoId)}`, {
-        headers: {
-          Accept: 'application/json',
-          'User-Agent': USER_AGENT,
-        },
-        signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
-      });
-      if (!response.ok) {
-        errors.push(`${instanceBase} returned ${response.status}`);
-        continue;
+
+  const tryInstance = async (instanceBase: string): Promise<ResolvedAudio> => {
+    const response = await fetch(`${instanceBase}/streams/${encodeURIComponent(videoId)}`, {
+      headers: {
+        Accept: 'application/json',
+        'User-Agent': USER_AGENT,
+      },
+      signal: AbortSignal.timeout(INSTANCE_REQUEST_TIMEOUT_MS),
+      cache: 'no-store',
+    });
+    if (!response.ok) throw new Error(`${instanceBase} returned HTTP ${response.status}`);
+
+    const payload = (await response.json()) as {
+      title?: string;
+      uploader?: string;
+      duration?: number;
+      audioStreams?: AudioStream[];
+    };
+    const streams = Array.isArray(payload.audioStreams)
+      ? payload.audioStreams
+          .filter((stream) => {
+            if (!stream?.url || stream.videoOnly) return false;
+            const mimeType = (stream.mimeType || '').split(';')[0].toLowerCase();
+            const format = (stream.format || '').toLowerCase();
+            return mimeType === 'audio/mp4' || mimeType === 'audio/webm' || format === 'm4a' || format === 'webm';
+          })
+          .map((stream) => {
+            const mimeType = (stream.mimeType || '').split(';')[0].toLowerCase();
+            const format = (stream.format || '').toUpperCase();
+            const normalizedMime = mimeType || (format === 'WEBM' ? 'audio/webm' : 'audio/mp4');
+            return { ...stream, mimeType: normalizedMime };
+          })
+      : [];
+
+    streams.sort((a, b) => Number(b.bitrate || 0) - Number(a.bitrate || 0));
+    const selected = streams[0];
+    if (!selected?.url) throw new Error(`${instanceBase} returned no audio-only formats`);
+
+    const directUrl = new URL(selected.url);
+    if (directUrl.protocol !== 'https:') {
+      throw new Error(`${instanceBase} returned a non-HTTPS stream URL`);
+    }
+
+    const format = (selected.format || (selected.mimeType === 'audio/webm' ? 'WEBM' : 'M4A')).toUpperCase();
+    return {
+      videoId,
+      title: String(payload.title || ''),
+      uploader: String(payload.uploader || ''),
+      duration: Number(payload.duration || 0),
+      directUrl: directUrl.toString(),
+      mimeType: selected.mimeType || 'audio/mp4',
+      format,
+      bitrate: Number(selected.bitrate || 0),
+      quality: String(selected.quality || (selected.bitrate ? `${Math.round(selected.bitrate / 1000)} kbps` : 'high quality')),
+      instanceBase,
+      expiresAt: Date.now() + CACHE_TTL_MS,
+    };
+  };
+
+  // Try small batches in parallel: one failing or slow instance cannot block
+  // every other public instance, while we avoid flooding the whole pool.
+  for (let offset = 0; offset < instances.length; offset += INSTANCE_BATCH_SIZE) {
+    const batch = instances.slice(offset, offset + INSTANCE_BATCH_SIZE);
+    const results = await Promise.all(batch.map(async (instanceBase) => {
+      try {
+        return await tryInstance(instanceBase);
+      } catch (error) {
+        errors.push(error instanceof Error ? error.message : `${instanceBase} failed`);
+        return null;
       }
-
-      const payload = (await response.json()) as {
-        title?: string;
-        uploader?: string;
-        duration?: number;
-        audioStreams?: AudioStream[];
-      };
-      const streams = Array.isArray(payload.audioStreams)
-        ? payload.audioStreams
-            .filter((stream) => {
-              if (!stream?.url || stream.videoOnly) return false;
-              const mimeType = (stream.mimeType || '').split(';')[0].toLowerCase();
-              const format = (stream.format || '').toLowerCase();
-              return mimeType === 'audio/mp4' || mimeType === 'audio/webm' || format === 'm4a' || format === 'webm';
-            })
-            .map((stream) => {
-              const mimeType = (stream.mimeType || '').split(';')[0].toLowerCase();
-              const format = (stream.format || '').toUpperCase();
-              const normalizedMime = mimeType || (format === 'WEBM' ? 'audio/webm' : 'audio/mp4');
-              return { ...stream, mimeType: normalizedMime };
-            })
-        : [];
-
-      streams.sort((a, b) => Number(b.bitrate || 0) - Number(a.bitrate || 0));
-      const selected = streams[0];
-      if (!selected?.url) {
-        errors.push(`${instanceBase} returned no audio-only formats`);
-        continue;
-      }
-
-      const directUrl = new URL(selected.url);
-      if (directUrl.protocol !== 'https:') {
-        errors.push(`${instanceBase} returned a non-HTTPS stream`);
-        continue;
-      }
-
-      const format = (selected.format || (selected.mimeType === 'audio/webm' ? 'WEBM' : 'M4A')).toUpperCase();
-      const resolved: ResolvedAudio = {
-        videoId,
-        title: String(payload.title || ''),
-        uploader: String(payload.uploader || ''),
-        duration: Number(payload.duration || 0),
-        directUrl: directUrl.toString(),
-        mimeType: selected.mimeType || 'audio/mp4',
-        format,
-        bitrate: Number(selected.bitrate || 0),
-        quality: String(selected.quality || (selected.bitrate ? `${Math.round(selected.bitrate / 1000)} kbps` : 'high quality')),
-        instanceBase,
-        expiresAt: Date.now() + CACHE_TTL_MS,
-      };
+    }));
+    const successful = results.filter((value): value is ResolvedAudio => Boolean(value));
+    if (successful.length) {
+      successful.sort((a, b) => b.bitrate - a.bitrate);
+      const resolved = successful[0];
       AUDIO_CACHE.set(videoId, resolved);
       if (AUDIO_CACHE.size > 500) {
         const oldest = AUDIO_CACHE.keys().next().value;
         if (oldest) AUDIO_CACHE.delete(oldest);
       }
       return resolved;
-    } catch (error) {
-      errors.push(`${instanceBase}: ${error instanceof Error ? error.message : 'upstream error'}`);
     }
   }
 
-  throw new Error(`Unable to resolve an audio stream. ${errors.slice(0, 2).join('; ')}`);
-};
+  const shownErrors = errors.slice(0, 8);
+  const remaining = Math.max(0, errors.length - shownErrors.length);
+  throw new Error(
+    `Unable to resolve an audio stream. ${shownErrors.join('; ')}${remaining ? `; and ${remaining} more instance failures` : ''}`,
+  );
+}
 
 const streamAudio = async (
   req: ApiRequest,

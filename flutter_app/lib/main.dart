@@ -9,7 +9,6 @@ import 'package:flutter/services.dart';
 import 'package:audio_service/audio_service.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
@@ -41,9 +40,8 @@ void main() async {
 
 class _MelodiyaAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
   Future<void> Function(String action)? onMediaAction;
+  bool _foreground = true;
   bool _hasTrack = false;
-  bool _lastPlaying = false;
-  Duration _position = Duration.zero;
 
   void updateTrack({
     required String videoId,
@@ -52,14 +50,12 @@ class _MelodiyaAudioHandler extends BaseAudioHandler with QueueHandler, SeekHand
     required String artworkUrl,
     required bool playing,
   }) {
-    if (videoId.isEmpty) return;
+    if (!_foreground || videoId.isEmpty) return;
     _hasTrack = true;
-    _lastPlaying = playing;
-    _position = Duration.zero;
     final artwork = Uri.tryParse(artworkUrl);
     mediaItem.add(MediaItem(
       id: 'youtube:$videoId',
-      album: 'YouTube Music',
+      album: 'Sonora · YouTube',
       title: title.isEmpty ? 'Unknown track' : title,
       artist: artist.isEmpty ? 'Unknown artist' : artist,
       artUri: artwork != null && (artwork.scheme == 'https' || artwork.scheme == 'http')
@@ -70,21 +66,17 @@ class _MelodiyaAudioHandler extends BaseAudioHandler with QueueHandler, SeekHand
   }
 
   void updatePlaying(bool playing) {
-    if (!_hasTrack) return;
-    _lastPlaying = playing;
+    if (!_foreground || !_hasTrack) return;
     _publish(playing: playing);
   }
 
-  void updatePosition(Duration position) {
-    if (!_hasTrack) return;
-    _position = position;
-    _publish(playing: _lastPlaying);
+  void setAppForeground(bool foreground) {
+    _foreground = foreground;
+    if (_hasTrack) _publish(playing: false, controlsEnabled: foreground);
   }
 
   void clear() {
     _hasTrack = false;
-    _lastPlaying = false;
-    _position = Duration.zero;
     mediaItem.add(null);
     playbackState.add(PlaybackState(
       processingState: AudioProcessingState.idle,
@@ -92,60 +84,59 @@ class _MelodiyaAudioHandler extends BaseAudioHandler with QueueHandler, SeekHand
     ));
   }
 
-  void _publish({required bool playing}) {
-    final controls = <MediaControl>[
-      MediaControl.skipToPrevious,
-      playing ? MediaControl.pause : MediaControl.play,
-      MediaControl.skipToNext,
-    ];
+  void _publish({required bool playing, bool controlsEnabled = true}) {
+    final controls = controlsEnabled
+        ? <MediaControl>[
+            MediaControl.skipToPrevious,
+            playing ? MediaControl.pause : MediaControl.play,
+            MediaControl.skipToNext,
+          ]
+        : <MediaControl>[];
     playbackState.add(PlaybackState(
       controls: controls,
-      androidCompactActionIndices: const [0, 1, 2],
+      androidCompactActionIndices: controlsEnabled ? const [0, 1, 2] : const [],
       processingState: AudioProcessingState.ready,
       playing: playing,
-      updatePosition: _position,
-      bufferedPosition: _position,
+      updatePosition: Duration.zero,
+      bufferedPosition: Duration.zero,
       speed: 1.0,
     ));
   }
 
   @override
   Future<void> play() async {
-    if (!_hasTrack) return;
+    if (!_foreground || !_hasTrack) return;
     await onMediaAction?.call('play');
-    updatePlaying(true);
+    _publish(playing: true);
   }
 
   @override
   Future<void> pause() async {
-    if (!_hasTrack) return;
+    if (!_foreground || !_hasTrack) return;
     await onMediaAction?.call('pause');
-    updatePlaying(false);
+    _publish(playing: false);
   }
 
   @override
   Future<void> skipToNext() async {
-    if (!_hasTrack) return;
+    if (!_foreground || !_hasTrack) return;
     await onMediaAction?.call('next');
   }
 
   @override
   Future<void> skipToPrevious() async {
-    if (!_hasTrack) return;
+    if (!_foreground || !_hasTrack) return;
     await onMediaAction?.call('previous');
   }
 
   @override
   Future<void> stop() async {
-    if (_hasTrack) await onMediaAction?.call('pause');
+    if (_foreground && _hasTrack) await onMediaAction?.call('pause');
     clear();
   }
 
   @override
-  Future<void> onNotificationDeleted() async {
-    if (_hasTrack) await onMediaAction?.call('pause');
-    clear();
-  }
+  Future<void> onNotificationDeleted() async => clear();
 }
 
 class MelodiyaApp extends StatelessWidget {
@@ -182,17 +173,16 @@ class _MelodiyaHomeState extends State<_MelodiyaHome> with WidgetsBindingObserve
   late final AudioPlayer _nativeAudioPlayer;
   StreamSubscription? _nativePlayerStateSubscription;
   StreamSubscription? _nativeErrorSubscription;
-  StreamSubscription<Duration>? _nativePositionSubscription;
   Timer? _nativeStateTimer;
   bool _nativeAudioActive = false;
   bool _nativeEndedNotified = false;
   bool _nativeRequestedPlaying = false;
   String? _activeNativeUrl;
-  File? _nativeOfflineFile;
   DateTime? _lastWebAudioCommandAt;
   HttpServer? _server;
   bool _loading = true;
   bool _canGoBack = false;
+  bool _appForeground = true;
   bool _notificationPermissionRequested = false;
   String? _error;
   int _progress = 0;
@@ -277,7 +267,6 @@ class _MelodiyaHomeState extends State<_MelodiyaHome> with WidgetsBindingObserve
       );
     _nativePlayerStateSubscription = _nativeAudioPlayer.playerStateStream.listen((state) {
       if (!_nativeAudioActive) return;
-      _audioHandler.updatePlaying(state.playing);
       if (state.processingState == ProcessingState.completed) {
         if (!_nativeEndedNotified) {
           _nativeEndedNotified = true;
@@ -286,9 +275,6 @@ class _MelodiyaHomeState extends State<_MelodiyaHome> with WidgetsBindingObserve
       } else {
         _publishNativeAudioState();
       }
-    });
-    _nativePositionSubscription = _nativeAudioPlayer.positionStream.listen((position) {
-      if (_nativeAudioActive) _audioHandler.updatePosition(position);
     });
     _nativeErrorSubscription = _nativeAudioPlayer.errorStream.listen((error) {
       if (_nativeAudioActive) _publishNativeAudioState(event: 'error', message: error.toString());
@@ -336,8 +322,6 @@ class _MelodiyaHomeState extends State<_MelodiyaHome> with WidgetsBindingObserve
 
       switch (command) {
         case 'load':
-          await _nativeAudioPlayer.stop();
-          await _deleteNativeOfflineFile();
           final rawUrl = message['url'] as String?;
           final uri = rawUrl == null ? null : Uri.tryParse(rawUrl);
           if (uri == null || uri.scheme != 'https' || !uri.hasAuthority) {
@@ -360,77 +344,13 @@ class _MelodiyaHomeState extends State<_MelodiyaHome> with WidgetsBindingObserve
             AudioSource.uri(
               uri,
               tag: MediaItem(
-                id: 'youtube:${message['videoId'] ?? uri.toString()}',
-                album: 'YouTube Music',
+                id: uri.toString(),
+                album: 'Sonora',
                 title: title == null || title.isEmpty ? 'Unknown track' : title,
                 artist: artist == null || artist.isEmpty ? 'Unknown artist' : artist,
                 artUri: artworkUri,
               ),
             ),
-          );
-          _audioHandler.updateTrack(
-            videoId: (message['videoId'] as String?)?.trim() ?? uri.toString(),
-            title: title ?? '',
-            artist: artist ?? '',
-            artworkUrl: rawArtwork ?? '',
-            playing: _nativeRequestedPlaying,
-          );
-          if (_nativeRequestedPlaying) {
-            unawaited(_nativeAudioPlayer.play().catchError((Object error) {
-              _publishNativeAudioState(event: 'error', message: error.toString());
-            }));
-          }
-          _publishNativeAudioState();
-          break;
-
-        case 'loadBytes':
-          await _nativeAudioPlayer.stop();
-          await _deleteNativeOfflineFile();
-          final encoded = message['dataBase64'] as String?;
-          if (encoded == null || encoded.isEmpty) {
-            throw const FormatException('Offline audio data is missing.');
-          }
-          final audioBytes = base64Decode(encoded);
-          if (audioBytes.isEmpty) throw const FormatException('Offline audio file is empty.');
-          final mimeType = (message['mimeType'] as String?)?.toLowerCase() ?? 'audio/mp4';
-          final extension = mimeType.contains('webm') ? 'webm' : (mimeType.contains('mpeg') ? 'mp3' : 'm4a');
-          final directory = await getTemporaryDirectory();
-          final file = File('${directory.path}/sonora-offline-${DateTime.now().microsecondsSinceEpoch}.$extension');
-          await file.writeAsBytes(audioBytes, flush: true);
-          _nativeOfflineFile = file;
-
-          final title = (message['title'] as String?)?.trim() ?? '';
-          final artist = (message['artist'] as String?)?.trim() ?? '';
-          final videoId = (message['videoId'] as String?)?.trim() ?? file.uri.toString();
-          final rawArtwork = message['artwork'] as String?;
-          final parsedArtwork = rawArtwork == null ? null : Uri.tryParse(rawArtwork);
-          final artworkUri = parsedArtwork != null &&
-                  (parsedArtwork.scheme == 'https' || parsedArtwork.scheme == 'http')
-              ? parsedArtwork
-              : null;
-
-          _nativeAudioActive = true;
-          _nativeEndedNotified = false;
-          _activeNativeUrl = file.uri.toString();
-          _nativeRequestedPlaying = message['autoplay'] == true;
-          await _nativeAudioPlayer.setAudioSource(
-            AudioSource.uri(
-              file.uri,
-              tag: MediaItem(
-                id: 'youtube:$videoId',
-                album: 'YouTube Music',
-                title: title.isEmpty ? 'Unknown track' : title,
-                artist: artist.isEmpty ? 'Unknown artist' : artist,
-                artUri: artworkUri,
-              ),
-            ),
-          );
-          _audioHandler.updateTrack(
-            videoId: videoId,
-            title: title,
-            artist: artist,
-            artworkUrl: rawArtwork ?? '',
-            playing: _nativeRequestedPlaying,
           );
           if (_nativeRequestedPlaying) {
             unawaited(_nativeAudioPlayer.play().catchError((Object error) {
@@ -460,7 +380,6 @@ class _MelodiyaHomeState extends State<_MelodiyaHome> with WidgetsBindingObserve
           _nativeAudioActive = false;
           _activeNativeUrl = null;
           await _nativeAudioPlayer.stop();
-          await _deleteNativeOfflineFile();
           _publishNativeAudioState(event: 'stopped', force: true);
           break;
 
@@ -485,17 +404,6 @@ class _MelodiyaHomeState extends State<_MelodiyaHome> with WidgetsBindingObserve
       }
     } catch (error) {
       _publishNativeAudioState(event: 'error', message: error.toString(), force: true);
-    }
-  }
-
-  Future<void> _deleteNativeOfflineFile() async {
-    final file = _nativeOfflineFile;
-    _nativeOfflineFile = null;
-    if (file == null) return;
-    try {
-      if (await file.exists()) await file.delete();
-    } catch (error) {
-      debugPrint('Could not remove temporary offline audio: $error');
     }
   }
 
@@ -707,7 +615,7 @@ class _MelodiyaHomeState extends State<_MelodiyaHome> with WidgetsBindingObserve
         _audioHandler.clear();
         return;
       }
-      if (command != 'update') return;
+      if (command != 'update' || !_appForeground) return;
 
       final videoId = (message['videoId'] as String?)?.trim() ?? '';
       if (videoId.isEmpty) {
@@ -729,21 +637,7 @@ class _MelodiyaHomeState extends State<_MelodiyaHome> with WidgetsBindingObserve
   }
 
   Future<void> _dispatchNativeMediaAction(String action) async {
-    if (!mounted) return;
-    _lastWebAudioCommandAt = DateTime.now();
-
-    // Play/pause is applied directly to just_audio first, so the notification
-    // still controls real audio if WebView JavaScript is suspended in the background.
-    if (_nativeAudioActive && action == 'play') {
-      _nativeRequestedPlaying = true;
-      unawaited(_nativeAudioPlayer.play().catchError((Object error) {
-        _publishNativeAudioState(event: 'error', message: error.toString());
-      }));
-    } else if (_nativeAudioActive && action == 'pause') {
-      _nativeRequestedPlaying = false;
-      await _nativeAudioPlayer.pause();
-    }
-
+    if (!mounted || !_appForeground) return;
     final detail = jsonEncode({'action': action});
     final script = 'window.dispatchEvent(new CustomEvent("music-action", {detail: $detail}));';
     unawaited(_web.runJavaScript(script).catchError((_) {}));
@@ -751,7 +645,12 @@ class _MelodiyaHomeState extends State<_MelodiyaHome> with WidgetsBindingObserve
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.paused || state == AppLifecycleState.detached) {
+    if (state == AppLifecycleState.resumed) {
+      _appForeground = true;
+      _audioHandler.setAppForeground(true);
+    } else if (state == AppLifecycleState.paused || state == AppLifecycleState.detached) {
+      _appForeground = false;
+      _audioHandler.setAppForeground(false);
       unawaited(_web.runJavaScript(
         'window.dispatchEvent(new Event("melodiya-app-background"));',
       ).catchError((_) {}));
@@ -767,8 +666,6 @@ class _MelodiyaHomeState extends State<_MelodiyaHome> with WidgetsBindingObserve
     _nativeStateTimer?.cancel();
     if (_nativePlayerStateSubscription != null) unawaited(_nativePlayerStateSubscription!.cancel());
     if (_nativeErrorSubscription != null) unawaited(_nativeErrorSubscription!.cancel());
-    if (_nativePositionSubscription != null) unawaited(_nativePositionSubscription!.cancel());
-    unawaited(_deleteNativeOfflineFile());
     unawaited(_nativeAudioPlayer.dispose());
     super.dispose();
   }

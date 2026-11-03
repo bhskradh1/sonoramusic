@@ -1,31 +1,22 @@
 # YouTube Music audio playback
 
-Melodiya resolves audio-only streams through the serverless `api/youtube-audio.ts` endpoint. The React player uses HTML audio in normal browsers and hands the resolved HTTPS stream to the Flutter Android native player when it detects the Flutter JavaScript bridge. Other music sources keep their existing playback paths.
+Melodiya's official YouTube Music catalogue tracks now use an audio-only HTML media element instead of the YouTube IFrame player. Tracks from other sources continue to use the existing player paths.
 
-## API deployment
+## API
 
-`GET /api/youtube-audio?id=<11-character-video-id>` resolves an audio-only M4A or WebM stream and returns JSON containing the selected provider URL, MIME type, bitrate, quality, and `streamUrl`. `GET /api/youtube-audio?id=<video-id>&stream=1` is the header-aware binary proxy fallback. It forwards byte-range requests and returns audio headers. The route is written as a Vercel serverless function; deploying only the static Vite frontend does not deploy this API.
+`GET /api/youtube-audio?id=<11-character-video-id>` resolves the best available audio-only M4A or WebM stream and returns JSON containing the provider URL, MIME type, bitrate, quality, and a `streamUrl`. Piped CDN proxy URLs are returned directly because they already support CORS and byte-range requests; this avoids holding a serverless function open for an entire song. If an instance returns a raw Google Video URL, `streamUrl` points to the local proxy instead.
 
-Set `VITE_YTMUSIC_AUDIO_API_URL` to the absolute URL of the deployed API route when the frontend is hosted separately, for example:
+`GET /api/youtube-audio?id=<video-id>&stream=1` is the header-aware fallback proxy. It forwards byte-range requests and adds the expected User-Agent, YouTube Referer, and Origin headers upstream, then returns the audio response with `Accept-Ranges`, `Content-Range`, `Content-Length` (when supplied), and the audio MIME type. Its maximum stream duration is governed by the serverless host's function-duration limit, so the default instance list prioritizes Piped instances with CDN proxy support.
 
-```env
-VITE_YTMUSIC_AUDIO_API_URL=https://your-api-deployment.vercel.app/api/youtube-audio
-```
+The endpoint accepts `videoId` as an alias for `id`, and also supports `HEAD` and `OPTIONS` requests. It validates the 11-character video ID and applies a best-effort per-IP request limit on warm serverless instances.
 
-This is a Vite build-time variable: set it in the frontend host's environment settings and rebuild/redeploy the frontend. The app tries this configured endpoint first, then the repository's legacy Vercel endpoint, then a same-origin `/api/youtube-audio` fallback. A same-origin fallback only works when the frontend host also serves the API route.
+## Configuration
 
-`YOUTUBE_AUDIO_PIPED_INSTANCES` is a server-side environment variable containing comma-separated Piped API base URLs. The API defaults to a small list of public instances, which may become rate-limited or unavailable; for production reliability use an instance you operate and control.
+- `VITE_YTMUSIC_AUDIO_API_URL`: optional browser-visible API URL. Defaults to the existing `https://melodiya-your-sound.vercel.app/api/youtube-audio` API deployment; set it to `/api/youtube-audio` when serving the frontend and function from the same origin.
+- `YOUTUBE_AUDIO_PIPED_INSTANCES`: optional comma-separated list of Piped API base URLs for server-side stream resolution. Defaults to a short list of public instances with CDN proxy support. Public instances are community-operated and can be unavailable or rate limited; configure an instance you operate for production reliability.
 
-## Browser playback vs Android background playback
+## Player integration
 
-- Chrome and installed PWAs use an HTML audio element and the browser Media Session API. This is best-effort background playback; Android may suspend a browser/PWA process and a web page cannot force a foreground media service to run.
-- The Flutter Android APK routes YouTube Music online audio and saved offline audio through `just_audio` and `audio_service`. The native service owns the Android media notification and lock-screen metadata/controls, so playback can continue while the WebView is backgrounded. Use the Flutter APK workflow described in `FLUTTER_ANDROID.md`; the Capacitor APK does not include this Flutter bridge.
-- Start playback while the Flutter app is visible. Android can prevent an app from starting new background playback without a user-initiated foreground start. Battery restrictions, force-stop, or denied notification permissions can still affect the experience.
+The existing YouTube Music search normalizer marks trusted catalogue responses with `source: "youtube_music"`. `MusicPlayer` uses `useYoutubeAudio` only for those tracks, retains the native-player bridge when a native audio URL is already provided, and continues to use the iframe player for other tracks. The Media Session API publishes title, artist, YouTube Music album metadata, and thumbnail artwork. Play, pause, previous, next, seek, and stop actions call the latest callbacks owned by `MelodiyaApp`, which is the current app-wide playback state owner.
 
-## Player metadata and controls
-
-The web player publishes title, artist, album (`YouTube Music`), and thumbnail artwork to the browser Media Session. In the Flutter APK it also sends the same metadata to `audio_service`, which exposes play/pause/previous/next controls. Native play/pause commands operate directly on the native audio player; next/previous are forwarded to the app's playback queue.
-
-Piped's `/streams/:videoId` response documents the `audioStreams` array and the audio MIME/format/URL fields consumed by the API: https://docs.piped.video/docs/api-documentation/.
-
-Only stream or retain audio where you have the necessary rights and permission, and comply with the relevant provider/platform terms.
+Piped's `/streams/:videoId` response documents the `audioStreams` array and audio MIME/format/URL fields used by the API route: https://docs.piped.video/docs/api-documentation/.

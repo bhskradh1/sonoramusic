@@ -1,21 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { RefObject } from 'react';
 import { getOfflineTrack } from '@/lib/offlineLibrary';
-import { resolveYoutubeAudioStream } from '@/lib/youtubeAudioApi';
-
-declare global {
-  interface Window {
-    MelodiyaNativeAudio?: { postMessage: (message: string) => void };
-  }
-}
 
 export interface YoutubeAudioTrack {
   videoId: string;
   trackId?: string;
   playlistId?: string;
-  title?: string;
-  artist?: string;
-  thumbnail?: string;
+}
+
+interface YoutubeAudioResponse {
+  streamUrl?: string;
+  error?: string;
 }
 
 interface UseYoutubeAudioOptions {
@@ -24,8 +19,6 @@ interface UseYoutubeAudioOptions {
   volume: number;
   /** When true, only a Blob saved in IndexedDB may be used. */
   offlineOnly?: boolean;
-  /** Route playback through the Flutter Android just_audio service. */
-  nativePlayback?: boolean;
   onEnded?: () => void;
   onPlaybackError?: () => void;
 }
@@ -42,30 +35,14 @@ interface UseYoutubeAudioResult {
   setVolume: (volume: number) => void;
 }
 
-const postNativeAudioCommand = (payload: Record<string, unknown>): boolean => {
-  if (typeof window === 'undefined' || !window.MelodiyaNativeAudio) return false;
-  try {
-    window.MelodiyaNativeAudio.postMessage(JSON.stringify(payload));
-    return true;
-  } catch {
-    return false;
-  }
-};
-
-const blobToBase64 = async (blob: Blob): Promise<string> => {
-  const bytes = new Uint8Array(await blob.arrayBuffer());
-  let binary = '';
-  const chunkSize = 0x8000;
-  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
-    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
-  }
-  return btoa(binary);
+const getAudioApiUrl = (): string => {
+  const configured = import.meta.env.VITE_YTMUSIC_AUDIO_API_URL?.trim();
+  return configured || 'https://melodiya-your-sound.vercel.app/api/youtube-audio';
 };
 
 /**
- * Resolves YouTube Music audio streams, plays saved IndexedDB Blobs offline,
- * and hands both online and downloaded audio to the Flutter native player when
- * running inside the Sonora Android wrapper. Ordinary browsers keep HTML audio.
+ * Resolves online YouTube Music audio streams and, while offline, plays the
+ * exact Blob persisted for the selected playlist track in IndexedDB.
  */
 export const useYoutubeAudio = (
   track: YoutubeAudioTrack | null,
@@ -74,14 +51,12 @@ export const useYoutubeAudio = (
     isPlaying,
     volume,
     offlineOnly = false,
-    nativePlayback = false,
     onEnded,
     onPlaybackError,
   }: UseYoutubeAudioOptions,
 ): UseYoutubeAudioResult => {
   const audioRef = useRef<HTMLAudioElement>(null);
   const isPlayingRef = useRef(isPlaying);
-  const nativeActiveRef = useRef(false);
   const onEndedRef = useRef(onEnded);
   const onPlaybackErrorRef = useRef(onPlaybackError);
   const [isLoading, setIsLoading] = useState(false);
@@ -141,19 +116,15 @@ export const useYoutubeAudio = (
 
   useEffect(() => {
     const audio = audioRef.current;
-    if (audio) audio.volume = Math.max(0, Math.min(1, volume));
-    if (nativePlayback && nativeActiveRef.current) {
-      postNativeAudioCommand({ command: 'volume', volume: Math.max(0, Math.min(1, volume)) });
-    }
-  }, [volume, nativePlayback]);
+    if (!audio) return;
+    audio.volume = Math.max(0, Math.min(1, volume));
+  }, [volume]);
 
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
 
     if (!enabled || !track?.videoId) {
-      if (nativeActiveRef.current) postNativeAudioCommand({ command: 'stop' });
-      nativeActiveRef.current = false;
       audio.pause();
       audio.removeAttribute('src');
       audio.load();
@@ -166,7 +137,6 @@ export const useYoutubeAudio = (
 
     const controller = new AbortController();
     let objectUrl: string | null = null;
-    nativeActiveRef.current = false;
     setIsLoading(true);
     setError(null);
     setCurrentTime(0);
@@ -174,60 +144,37 @@ export const useYoutubeAudio = (
 
     const loadAudio = async () => {
       try {
+        let sourceUrl: string;
         if (offlineOnly) {
           if (!track.trackId) throw new Error('The selected track does not have an offline playlist record.');
           const record = await getOfflineTrack(track.trackId, track.playlistId);
           if (!record) throw new Error('This track has not been downloaded for offline playback.');
           if (controller.signal.aborted) return;
-
-          if (nativePlayback) {
-            const dataBase64 = await blobToBase64(record.blob);
-            if (controller.signal.aborted) return;
-            const sent = postNativeAudioCommand({
-              command: 'loadBytes',
-              dataBase64,
-              mimeType: record.mime_type || record.blob.type || 'audio/mp4',
-              videoId: record.video_id,
-              title: track.title || record.title,
-              artist: track.artist || record.artist,
-              artwork: track.thumbnail || record.thumbnail_base64,
-              autoplay: isPlayingRef.current,
-            });
-            if (!sent) throw new Error('The Android native audio bridge is unavailable. Reopen the installed Sonora Android app.');
-            nativeActiveRef.current = true;
-            setIsLoading(true);
-            return;
-          }
-
           objectUrl = URL.createObjectURL(record.blob);
-          audio.src = objectUrl;
+          sourceUrl = objectUrl;
         } else {
-          const resolved = await resolveYoutubeAudioStream(track.videoId, controller.signal);
-          if (controller.signal.aborted) return;
-
-          if (nativePlayback) {
-            const sent = postNativeAudioCommand({
-              command: 'load',
-              url: resolved.streamUrl,
-              videoId: track.videoId,
-              title: track.title || 'Unknown track',
-              artist: track.artist || 'Unknown artist',
-              artwork: track.thumbnail || '',
-              autoplay: isPlayingRef.current,
-            });
-            if (!sent) throw new Error('The Android native audio bridge is unavailable. Reopen the installed Sonora Android app.');
-            nativeActiveRef.current = true;
-            setIsLoading(true);
-            return;
+          const apiUrl = getAudioApiUrl();
+          const separator = apiUrl.includes('?') ? '&' : '?';
+          const response = await fetch(
+            `${apiUrl}${separator}id=${encodeURIComponent(track.videoId)}`,
+            { signal: controller.signal, cache: 'no-store' },
+          );
+          const payload = (await response.json().catch(() => ({}))) as YoutubeAudioResponse;
+          if (!response.ok || !payload.streamUrl) {
+            throw new Error(payload.error || `Audio stream request failed (${response.status})`);
           }
-
-          audio.src = resolved.streamUrl;
+          if (controller.signal.aborted) return;
+          sourceUrl = new URL(
+            payload.streamUrl,
+            apiUrl.startsWith('http') ? apiUrl : window.location.origin,
+          ).toString();
         }
 
         if (controller.signal.aborted) {
           if (objectUrl) URL.revokeObjectURL(objectUrl);
           return;
         }
+        audio.src = sourceUrl;
         audio.load();
         setIsLoading(true);
         if (isPlayingRef.current) {
@@ -252,35 +199,16 @@ export const useYoutubeAudio = (
     void loadAudio();
     return () => {
       controller.abort();
-      if (nativeActiveRef.current) postNativeAudioCommand({ command: 'stop' });
-      nativeActiveRef.current = false;
       audio.pause();
       audio.removeAttribute('src');
       audio.load();
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [
-    enabled,
-    offlineOnly,
-    nativePlayback,
-    track?.videoId,
-    track?.trackId,
-    track?.playlistId,
-    track?.title,
-    track?.artist,
-    track?.thumbnail,
-  ]);
+  }, [enabled, offlineOnly, track?.videoId, track?.trackId, track?.playlistId]);
 
   useEffect(() => {
     const audio = audioRef.current;
-    if (!enabled) return;
-    if (nativePlayback) {
-      if (nativeActiveRef.current) {
-        postNativeAudioCommand({ command: isPlaying ? 'play' : 'pause' });
-      }
-      return;
-    }
-    if (!audio?.src) return;
+    if (!audio || !enabled || !audio.src) return;
     if (isPlaying) {
       audio.play().catch((playError: unknown) => {
         setError(playError instanceof Error ? playError.message : 'Playback was blocked by the browser.');
@@ -289,23 +217,12 @@ export const useYoutubeAudio = (
     } else {
       audio.pause();
     }
-  }, [enabled, isPlaying, nativePlayback, track?.videoId]);
+  }, [enabled, isPlaying, track?.videoId]);
 
   const play = useCallback(async () => {
-    if (nativePlayback) {
-      if (!nativeActiveRef.current) {
-        setError('The audio stream is still loading.');
-        return;
-      }
-      if (!postNativeAudioCommand({ command: 'play' })) {
-        setError('The Android native audio service is unavailable.');
-        onPlaybackErrorRef.current?.();
-      }
-      return;
-    }
-
     const audio = audioRef.current;
-    if (!audio?.src) {
+    if (!audio) return;
+    if (!audio.src) {
       setError('The audio stream is still loading.');
       return;
     }
@@ -316,37 +233,23 @@ export const useYoutubeAudio = (
       setError(playError instanceof Error ? playError.message : 'Playback was blocked by the browser.');
       onPlaybackErrorRef.current?.();
     }
-  }, [nativePlayback]);
+  }, []);
 
   const pause = useCallback(() => {
-    if (nativePlayback) {
-      if (nativeActiveRef.current) postNativeAudioCommand({ command: 'pause' });
-      return;
-    }
     audioRef.current?.pause();
-  }, [nativePlayback]);
+  }, []);
 
   const seek = useCallback((seconds: number) => {
-    if (!Number.isFinite(seconds)) return;
-    if (nativePlayback) {
-      if (nativeActiveRef.current) postNativeAudioCommand({ command: 'seek', position: Math.max(0, seconds) });
-      return;
-    }
     const audio = audioRef.current;
-    if (!audio) return;
+    if (!audio || !Number.isFinite(seconds)) return;
     const bounded = Math.max(0, audio.duration ? Math.min(seconds, audio.duration) : seconds);
     audio.currentTime = bounded;
     setCurrentTime(bounded);
-  }, [nativePlayback]);
+  }, []);
 
   const setVolume = useCallback((nextVolume: number) => {
-    const bounded = Math.max(0, Math.min(1, nextVolume));
-    if (nativePlayback) {
-      if (nativeActiveRef.current) postNativeAudioCommand({ command: 'volume', volume: bounded });
-      return;
-    }
-    if (audioRef.current) audioRef.current.volume = bounded;
-  }, [nativePlayback]);
+    if (audioRef.current) audioRef.current.volume = Math.max(0, Math.min(1, nextVolume));
+  }, []);
 
   return { audioRef, isLoading, currentTime, duration, error, play, pause, seek, setVolume };
 };

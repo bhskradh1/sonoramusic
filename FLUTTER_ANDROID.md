@@ -1,26 +1,20 @@
-# Sonora — Flutter Android app
+# Melodiya — Flutter Android APK
 
-The React/Vite application remains the source of truth. The Flutter Android wrapper packages that same web UI inside a native Android app and provides native background audio through `just_audio` and `audio_service`.
+This repository remains the source of truth for the existing React/Vite web app. The Flutter Android shell packages the built web app into an installable Android APK; existing React screens and Supabase operations are reused rather than reimplemented.
 
-## Which install should be used?
+## Build the APK with GitHub Actions
 
-- **Installed PWA / Chrome website:** uses browser-managed HTML audio. Background playback may work on some Android/browser combinations, but the app cannot force Android to keep a browser tab alive.
-- **Flutter Android APK:** uses Android's native media playback service for YouTube Music streams and downloaded playlist audio. This is the recommended install for lock-screen playback and notification controls.
-- **Capacitor APK:** does not include this Flutter native audio bridge. Use the Flutter build for background playback.
+1. Open **Actions** in this repository.
+2. Select **Build Melodiya Android APK**.
+3. Click **Run workflow** and choose the `feat/flutter-android-apk` branch for a test build (or merge this branch into `main) to enable builds on main).
+4. When the job succeeds, open the workflow run and download the `melodiya-android-apk` artifact.
+5. Extract the artifact and install `app-release.apk` on an Android device.
 
-## Build an APK with GitHub Actions
-
-1. Push the updated repository to GitHub.
-2. Open **Actions → Build Sonora Flutter Android APK**.
-3. Select **Run workflow**.
-4. When the workflow completes, download the `sonora-flutter-android-apk` artifact.
-5. Extract and install `app-debug.apk` on the Android device.
-
-This workflow creates a debug-signed APK, so it does not require an Android signing keystore. It is suitable for device testing. A release APK should be built and signed with your production keystore before public distribution.
+The workflow installs Node.js, Java, and Flutter; builds the React app; copies the Vite output into the Flutter assets; generates Android project files; and builds a release APK. It does not require committing generated web assets or the generated Android Gradle project.
 
 ## Local build
 
-Requirements: Node.js 22+, Java 17+, Flutter stable, and the Android SDK.
+Requirements: Node.js 22+, Java 17, Flutter stable and Android SDK.
 
 ```bash
 npm ci
@@ -28,26 +22,21 @@ npm run build
 bash scripts/prepare-flutter-android.sh
 cd flutter_app
 flutter pub get
-flutter build apk --debug
+flutter build apk --release
 ```
 
-APK output: `flutter_app/build/app/outputs/flutter-apk/app-debug.apk`.
+APK output: `flutter_app/build/app/outputs/flutter-apk/app-release.apk`.
 
-## Background playback behavior
+## Authentication redirect
 
-- Online YouTube Music tracks are resolved by the server API, then handed to the Flutter `just_audio` player.
-- Tracks saved by the playlist offline downloader remain stored in the WebView's IndexedDB. When an offline track is selected in the Flutter APK, its Blob is copied to a temporary app file and played by the same native audio player. IndexedDB is isolated per browser origin, so download the playlist inside the Flutter APK itself; Chrome/PWA downloads do not automatically transfer into the APK.
-- `audio_service` publishes Android media metadata and notification/lock-screen controls. Play and pause are handled by the native player even when WebView JavaScript is suspended. Previous/next are forwarded to the app's playback queue.
-- Start playback while the app is visible first. Android may restrict starting new background playback without a foreground user action.
+The build uses `MELODIYA_AUTH_REDIRECT_URL` if configured as a GitHub Actions repository variable, otherwise it defaults to the public deployment `https://melodiya-your-sound.vercel.app/`. Ensure this exact URL is allowed in Supabase **Authentication → URL Configuration → Redirect URLs**. The existing signup flow redirects to the current page origin.
 
-The web/PWA build still uses HTML audio and cannot guarantee uninterrupted background playback. Android battery optimization, force-stop, and user-disabled notification permissions can also interrupt or hide system media controls.
+## Notes
 
-## Authentication and online features
-
-The Flutter wrapper bundles the Vite build locally. Supabase authentication, search, playlist metadata, and online audio resolution still require internet access. Configure the same public Supabase URL/key and `VITE_YTMUSIC_AUDIO_API_URL` used by the web deployment before building when those variables are required by your deployment.
-
-Only public Supabase client credentials belong in frontend builds. Never include a service-role key or other private credentials.
-
-## Audio source and permissions
-
-The app uses public stream resolvers and should only download or retain audio where you have the necessary rights and permission. Confirm that your use complies with the relevant platform and provider terms. Public resolver instances can be rate-limited or unavailable; for reliable production operation, use an audio API you operate and control.
+- The bundled UI launches locally, but Supabase authentication, database calls, and YouTube features still require internet access.
+- Only the public Supabase anon/publishable key belongs in client code. Never add a Supabase service-role key or other private credentials to this repository.
+- The wrapper supports WebView JavaScript, Android system back navigation, and opening external links in their associated Android apps.
+- Native playback uses `just_audio` + `just_audio_background`, with an Android media playback service, media notification, and lock-screen/headset controls. The React player uses this path when a track includes `audioUrl` (or `audio_url`) containing a direct, accessible HTTPS audio stream URL.
+- The existing discovery/search catalog returns YouTube video IDs only, which are not audio stream URLs. YouTube playback stays in the embedded YouTube player and is not routed through the native audio player. Do not extract or separate YouTube audio. Native background playback requires licensed audio files/streams to be made available to the app.
+- Test direct-stream background playback on a physical Android device, including screen lock, notification play/pause, seeking, and network interruptions.
+- This branch adds the Android packaging path without deleting or replacing the existing web app.

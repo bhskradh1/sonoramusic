@@ -43,7 +43,6 @@ interface Track {
 declare global {
   interface Window {
     MelodiyaNativeAudio?: { postMessage: (message: string) => void };
-    MelodiyaNativeMedia?: { postMessage: (message: string) => void };
   }
 }
 
@@ -90,14 +89,8 @@ export const MusicPlayer: React.FC<MusicPlayerProps> = ({
   const { toast } = useToast();
   const { notifications: notificationsEnabled, normalizeVolume, autoOpenNowPlaying, defaultVolume, crossfade, crossfadeSeconds } = useSettings();
   const nativeAudioUrl = currentTrack?.audioUrl ?? currentTrack?.audio_url ?? null;
-  const hasNativeAudioBridge = typeof window !== 'undefined' && Boolean(window.MelodiyaNativeAudio);
-  const needsYoutubeAudio = Boolean(offlineMode || (currentTrack?.source === 'youtube_music' && !nativeAudioUrl));
-  // In the Flutter Android wrapper, both online YouTube streams and saved
-  // IndexedDB Blobs are played by just_audio so Android can keep them alive
-  // through its foreground media service. Browsers/PWAs use HTMLAudioElement.
-  const useNativeAudio = Boolean(hasNativeAudioBridge && (nativeAudioUrl || needsYoutubeAudio));
-  const useNativeYoutubeAudio = Boolean(useNativeAudio && needsYoutubeAudio);
-  const useYoutubeStream = Boolean(needsYoutubeAudio && !useNativeAudio);
+  const useNativeAudio = !offlineMode && Boolean(nativeAudioUrl && typeof window !== 'undefined' && window.MelodiyaNativeAudio);
+  const useYoutubeStream = Boolean(offlineMode || (currentTrack?.source === 'youtube_music' && !useNativeAudio));
   const triggerNextTrackRef = useRef<() => void>(() => {});
   const sendNativeAudioCommand = useCallback((payload: Record<string, unknown>) => {
     try {
@@ -114,18 +107,14 @@ export const MusicPlayer: React.FC<MusicPlayerProps> = ({
   useBackgroundAudio(isPlaying);
 
   const youtubeAudio = useYoutubeAudio(
-    needsYoutubeAudio && currentTrack ? {
+    useYoutubeStream && currentTrack ? {
       videoId: currentTrack.videoId,
       trackId: currentTrack.id,
       playlistId: currentTrack.playlistId,
-      title: currentTrack.title,
-      artist: currentTrack.artist,
-      thumbnail: currentTrack.thumbnail,
     } : null,
     {
-      enabled: needsYoutubeAudio,
+      enabled: useYoutubeStream,
       offlineOnly: offlineMode,
-      nativePlayback: useNativeYoutubeAudio,
       isPlaying,
       volume: (normalizeVolume ? 75 : (isMuted ? 0 : volume[0])) / 100,
       onEnded: () => triggerNextTrackRef.current(),
@@ -282,13 +271,13 @@ export const MusicPlayer: React.FC<MusicPlayerProps> = ({
   triggerNextTrackRef.current = triggerNextTrack;
 
   useEffect(() => {
-    if (!needsYoutubeAudio || !youtubeAudio.error) return;
+    if (!useYoutubeStream || !youtubeAudio.error) return;
     toast({
       title: 'YouTube Music playback failed',
       description: youtubeAudio.error,
       variant: 'destructive',
     });
-  }, [needsYoutubeAudio, youtubeAudio.error, toast]);
+  }, [useYoutubeStream, youtubeAudio.error, toast]);
 
   // Apply the same fade/volume settings to the streamed audio element that
   // the embedded YouTube player receives.
@@ -448,10 +437,10 @@ export const MusicPlayer: React.FC<MusicPlayerProps> = ({
     onPlayPause,
     onNext,
     onPrevious,
-    play: () => { if (needsYoutubeAudio) void youtubeAudio.play(); },
-    pause: () => { if (needsYoutubeAudio) youtubeAudio.pause(); },
+    play: () => { if (useYoutubeStream) void youtubeAudio.play(); },
+    pause: () => { if (useYoutubeStream) youtubeAudio.pause(); },
     seek: (seconds: number) => {
-      if (needsYoutubeAudio) {
+      if (useYoutubeStream) {
         youtubeAudio.seek(seconds);
       } else if (useNativeAudio) {
         sendNativeAudioCommand({ command: 'seek', position: seconds });
@@ -521,7 +510,7 @@ export const MusicPlayer: React.FC<MusicPlayerProps> = ({
       navigator.mediaSession.metadata = new MediaMetadata({
         title: currentTrack.title,
         artist: currentTrack.artist,
-        album: (currentTrack.source === 'youtube_music' || offlineMode) ? 'YouTube Music' : 'Sonora',
+        album: currentTrack.source === 'youtube_music' ? 'YouTube Music' : 'Sonora',
         artwork: [
           { src: currentTrack.thumbnail, sizes: '96x96', type: 'image/jpeg' },
           { src: currentTrack.thumbnail, sizes: '256x256', type: 'image/jpeg' },
@@ -530,29 +519,7 @@ export const MusicPlayer: React.FC<MusicPlayerProps> = ({
       });
     }
     navigator.mediaSession.playbackState = isPlaying ? 'playing' : 'paused';
-  }, [currentTrack, isPlaying, useYoutubeStream, offlineMode]);
-
-  // Publish metadata to the Android audio_service notification as well as
-  // browser Media Session. The native service owns lock-screen controls while
-  // the Flutter WebView is backgrounded.
-  useEffect(() => {
-    if (!window.MelodiyaNativeMedia) return;
-    const payload = currentTrack && useNativeAudio
-      ? {
-          command: 'update',
-          videoId: currentTrack.videoId,
-          title: currentTrack.title,
-          artist: currentTrack.artist,
-          artwork: currentTrack.thumbnail,
-          playing: isPlaying,
-        }
-      : { command: 'clear' };
-    try {
-      window.MelodiyaNativeMedia.postMessage(JSON.stringify(payload));
-    } catch (error) {
-      console.warn('Could not publish native playback metadata:', error);
-    }
-  }, [currentTrack, isPlaying, useNativeAudio]);
+  }, [currentTrack, isPlaying, useYoutubeStream]);
 
   // Keep the notification scrubber in sync
   useEffect(() => {
@@ -628,7 +595,7 @@ export const MusicPlayer: React.FC<MusicPlayerProps> = ({
   useEffect(() => {
     if (!useNativeAudio) return;
     sendNativeAudioCommand({ command: 'volume', volume: (isMuted ? 0 : volume[0]) / 100 });
-  }, [useNativeAudio, currentTrack?.videoId, volume, isMuted, sendNativeAudioCommand]);
+  }, [useNativeAudio, volume, isMuted, sendNativeAudioCommand]);
 
   // Sync volume to YouTube player
   useEffect(() => {
@@ -640,7 +607,7 @@ export const MusicPlayer: React.FC<MusicPlayerProps> = ({
 
   const handleFirstPlay = async () => {
     // Always toggle playback first — notification permission must never block it.
-    if (needsYoutubeAudio && !useNativeYoutubeAudio && !isPlaying) void youtubeAudio.play();
+    if (useYoutubeStream && !isPlaying) void youtubeAudio.play();
     onPlayPause();
     try {
       if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
@@ -680,7 +647,7 @@ export const MusicPlayer: React.FC<MusicPlayerProps> = ({
   const displayedDuration = useNativeAudio
     ? nativeDuration
     : (useYoutubeStream ? youtubeAudio.duration : duration);
-  const activeIsLoading = useNativeAudio ? isLoading : (useYoutubeStream ? youtubeAudio.isLoading : isLoading);
+  const activeIsLoading = useYoutubeStream ? youtubeAudio.isLoading : isLoading;
   const progressPercentage = displayedDuration > 0 ? (displayedCurrentTime / displayedDuration) * 100 : 0;
 
   const formatTime = (seconds: number) => {
