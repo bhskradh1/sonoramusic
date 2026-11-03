@@ -21,7 +21,7 @@ const MAX_SEARCH_RESULTS = 20;
 const inFlightSearches = new Map<string, Promise<MelodiyaSearchTrack[]>>();
 
 const PRODUCTION_SEARCH_API =
-  'https://melodiya-your-sound.vercel.app/api/ytmusic-search';
+  'https://melodiyayoursound.vercel.app/api/ytmusic-search';
 
 const getSearchApiUrl = (): string => {
   const configured = import.meta.env.VITE_YTMUSIC_SEARCH_API_URL?.trim();
