@@ -15,7 +15,7 @@ export interface ResolvedYoutubeAudio {
   apiUrl: string;
 }
 
-const DEFAULT_AUDIO_API_URL = 'https://melodiya-your-sound.vercel.app/api/youtube-audio';
+const DEFAULT_AUDIO_API_URL = 'https://sonorasong.vercel.app/api/youtube-audio';
 
 /**
  * Try the explicitly configured API first, then the known production API,
