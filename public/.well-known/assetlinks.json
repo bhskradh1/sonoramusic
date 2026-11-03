@@ -1,0 +1,14 @@
+[
+  {
+    "relation": [
+      "delegate_permission/common.handle_all_urls"
+    ],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "app.vercel.sonorasong.twa",
+      "sha256_cert_fingerprints": [
+        "77:FD:A8:68:FC:D5:B6:31:ED:17:27:B9:06:5A:95:A5:A0:A4:6D:61:AB:C7:4C:54:C6:70:BD:B2:A4:0E:C8:BB"
+      ]
+    }
+  }
+]

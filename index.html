@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&display=swap" rel="stylesheet" />
+    <title>Sonora Black</title>
+    
+    <!-- PWA Meta Tags -->
+    <meta name="description" content="Sonora Black. A private space for premium listening, discovery, and shared music." />
+    <meta name="author" content="Sonora" />
+    <meta name="theme-color" content="#080909" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Sonora" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="application-name" content="Sonora" />
+    
+    <!-- PWA Manifest -->
+    <link rel="manifest" href="/manifest.json" />
+    
+    <!-- Apple Touch Icon (must be opaque, 180x180) -->
+    <link rel="apple-touch-icon" href="/logo.png" />
+    
+    <!-- Favicon -->
+    <link rel="icon" type="image/png" href="/logo.png" />
+    
+    <!-- Open Graph -->
+    <meta property="og:title" content="Sonora Black" />
+    <meta property="og:description" content="A private space for premium listening, discovery, and shared music." />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="https://melodiya-your-sound.vercel.app/logo.png" />
+    <meta property="og:image:alt" content="Sonora app logo" />
+
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:image" content="https://melodiya-your-sound.vercel.app/logo.png" />
+
+    <!-- Instant splash: paints before JS loads, removed automatically when React mounts -->
+    <style>
+      html, body { margin: 0; background: #080909; }
+      #splash { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: #080909; }
+      #splash img { width: 96px; height: 96px; animation: splash-pulse 1.6s ease-in-out infinite; }
+      @keyframes splash-pulse { 0%,100% { opacity: .75; transform: scale(.96); } 50% { opacity: 1; transform: scale(1); } }
+    </style>
+  </head>
+
+  <body>
+    <div id="root"><div id="splash"><img src="/logo.png" alt="Sonora" /></div></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

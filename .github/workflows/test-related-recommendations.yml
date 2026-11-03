@@ -1,0 +1,29 @@
+name: Test related recommendations
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'supabase/functions/youtube-search/related.ts'
+      - 'supabase/functions/youtube-search/related.test.ts'
+      - '.github/workflows/test-related-recommendations.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  related-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run related-track unit tests
+        working-directory: supabase/functions/youtube-search
+        run: node --experimental-strip-types --test related.test.ts

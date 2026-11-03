@@ -1,0 +1,150 @@
+name: Build Sonora Capacitor Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'public/**'
+      - 'index.html'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'vite.config.ts'
+      - 'capacitor.config.ts'
+      - 'scripts/configure-capacitor-android.py'
+      - '.github/workflows/build-capacitor-android.yml'
+
+concurrency:
+  group: sonora-capacitor-android
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Reconcile npm lockfile
+        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+
+      - name: Install web and Capacitor dependencies
+        run: npm ci
+
+      - name: Build local web application
+        run: npm run build
+
+      - name: Set up Java for Capacitor Android
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          # The SDK "tools" package is obsolete; current runners already use command-line tools.
+          packages: platform-tools
+
+      - name: Generate Capacitor Android project
+        run: |
+          npx cap add android
+          npx cap sync android
+
+      - name: Calculate Android version code
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "ANDROID_VERSION_CODE=$((1000 + GITHUB_RUN_NUMBER))" >> "$GITHUB_ENV"
+          echo "APP_VERSION=$(node -p "require('./package.json').version")" >> "$GITHUB_ENV"
+
+      - name: Restore existing Sonora signing key
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for secret_name in ANDROID_KEYSTORE_BASE64 ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD ANDROID_STORE_PASSWORD; do
+            if [[ -z "${!secret_name:-}" ]]; then
+              echo "::error::Missing required repository secret: ${secret_name}"
+              exit 1
+            fi
+          done
+          mkdir -p android/app
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/app/melodiya-upload-key.p12
+          test -s android/app/melodiya-upload-key.p12
+          keytool -list -storetype PKCS12 -keystore android/app/melodiya-upload-key.p12 -storepass "$ANDROID_STORE_PASSWORD" -alias "$ANDROID_KEY_ALIAS" >/dev/null
+          python3 scripts/configure-capacitor-android.py
+          chmod 600 android/app/melodiya-upload-key.p12
+
+      - name: Build signed Capacitor APK
+        env:
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          cd android
+          ./gradlew --no-daemon --stacktrace assembleRelease
+
+      - name: Verify APK package and bundled Sonora application
+        run: |
+          python3 - <<'PY'
+          import re
+          import zipfile
+          from pathlib import Path
+
+          gradle = Path('android/app/build.gradle').read_text()
+          package = re.search(r'applicationId\s+"([^"]+)"', gradle)
+          if not package or package.group(1) != 'com.melodiya.melodiya_app':
+              raise SystemExit('APK is not configured with the existing Melodiya package ID.')
+          apk = Path('android/app/build/outputs/apk/release/app-release.apk')
+          if not apk.is_file() or apk.stat().st_size < 1_000_000:
+              raise SystemExit('Signed APK is missing or unexpectedly small.')
+          with zipfile.ZipFile(apk) as archive:
+              names = archive.namelist()
+              html = [name for name in names if name.endswith('assets/public/index.html')]
+              js = [name for name in names if name.endswith('.js') and '/assets/' in name]
+              if not html or not js:
+                  raise SystemExit('The Sonora Capacitor APK does not contain the local web app bundle.')
+          print(f'Verified signed APK: {apk} ({apk.stat().st_size} bytes)')
+          print(f'Package ID: {package.group(1)}')
+          PY
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sonora-capacitor-android-apk
+          path: android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish downloadable GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="android/app/build/outputs/apk/release/app-release.apk"
+          TAG="capacitor-android-build-$ANDROID_VERSION_CODE"
+          gh release create "$TAG" "$APK" \
+            --title "Sonora Android $APP_VERSION (build $ANDROID_VERSION_CODE)" \
+            --notes "Signed Sonora Android APK built with Capacitor. The Sonora web app is bundled locally in the APK."
+
+      - name: Remove signing material
+        if: always()
+        run: rm -f android/app/melodiya-upload-key.p12

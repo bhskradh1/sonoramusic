@@ -1,0 +1,320 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Sonora Music App Design System - Sonora Black theme
+All colors MUST be HSL. Dark theme with vibrant gradients.
+*/
+
+@layer base {
+  :root {
+    --radius: 0.75rem;
+    --transition-smooth: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    --transition-bounce: all 0.4s cubic-bezier(0.68, -0.55, 0.265, 1.55);
+  }
+
+  /* Light theme */
+  .light {
+    --background: 0 0% 98%;
+    --foreground: 222 47% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+    --primary: 280 100% 55%;
+    --primary-foreground: 220 12% 7%;
+    --secondary: 220 14% 92%;
+    --secondary-foreground: 222 47% 11%;
+    --muted: 220 14% 92%;
+    --muted-foreground: 220 9% 46%;
+    --accent: 142 76% 36%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 220 13% 87%;
+    --input: 220 13% 87%;
+    --ring: 280 100% 55%;
+    --signal: 142 76% 36%;
+    --player-bg: 220 14% 96%;
+    --sidebar-bg: 220 14% 96%;
+    --hover-bg: 220 14% 89%;
+    --gradient-primary: linear-gradient(135deg, hsl(280 100% 55%), hsl(260 100% 50%));
+    --gradient-secondary: linear-gradient(135deg, hsl(142 76% 36%), hsl(120 100% 30%));
+    --gradient-hero: linear-gradient(135deg, hsl(280 100% 55%), hsl(200 100% 50%));
+    --gradient-card: linear-gradient(135deg, hsl(0 0% 100%), hsl(220 14% 96%));
+    --shadow-glow: 0 0 40px hsl(280 100% 55% / 0.15);
+    --shadow-elegant: 0 10px 30px -10px hsl(220 14% 80% / 0.3);
+    --sidebar-background: 0 0% 98%;
+    --sidebar-foreground: 240 5.3% 26.1%;
+    --sidebar-primary: 280 100% 55%;
+    --sidebar-primary-foreground: 220 12% 7%;
+    --sidebar-accent: 240 4.8% 95.9%;
+    --sidebar-accent-foreground: 240 5.9% 10%;
+    --sidebar-border: 220 13% 91%;
+    --sidebar-ring: 280 100% 55%;
+  }
+
+  .dark {
+    /* Sonora Black palette: graphite blacks, silver neutrals, one lime signal */
+    --background: 180 6% 3%;
+    --foreground: 240 5% 96%;
+    --card: 180 5% 7%;
+    --card-foreground: 240 5% 96%;
+    --popover: 180 6% 5%;
+    --popover-foreground: 240 5% 96%;
+    --primary: 240 6% 90%;
+    --primary-foreground: 240 10% 4%;
+    --primary-glow: 240 6% 96%;
+    --secondary: 180 4% 12%;
+    --secondary-foreground: 240 5% 90%;
+    --muted: 180 4% 10%;
+    --muted-foreground: 240 3% 55%;
+    --accent: 180 4% 17%;
+    --accent-foreground: 240 5% 96%;
+    --signal: 82 85% 80%;
+    --destructive: 0 72% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 180 3% 14%;
+    --input: 180 3% 14%;
+    --ring: 240 6% 80%;
+    --player-bg: 180 6% 5%;
+    --sidebar-bg: 180 6% 3%;
+    --hover-bg: 180 4% 11%;
+    --gradient-primary: linear-gradient(135deg, hsl(240 5% 96%), hsl(240 4% 64%));
+    --gradient-secondary: linear-gradient(135deg, hsl(180 3% 24%), hsl(240 3% 50%));
+    --gradient-hero: linear-gradient(112deg, hsl(150 3% 13% / .96), hsl(180 5% 6% / .9));
+    --gradient-card: linear-gradient(135deg, hsl(180 5% 8%), hsl(180 4% 11%));
+    --shadow-glow: 0 0 40px hsl(240 5% 90% / 0.10);
+    --shadow-elegant: 0 18px 45px -18px hsl(0 0% 0% / 0.8);
+    --sidebar-background: 180 6% 3%;
+    --sidebar-foreground: 240 5% 90%;
+    --sidebar-primary: 240 6% 90%;
+    --sidebar-primary-foreground: 240 10% 4%;
+    --sidebar-accent: 180 4% 12%;
+    --sidebar-accent-foreground: 240 5% 96%;
+    --sidebar-border: 180 3% 14%;
+    --sidebar-ring: 240 6% 80%;
+  }
+
+}
+
+@layer base {
+  html, body, #root {
+    width: 100%;
+    min-width: 0;
+    height: 100%;
+    min-height: 100%;
+    margin: 0;
+  }
+
+  #root {
+    height: 100dvh;
+    max-width: 100%;
+    overflow-x: clip;
+  }
+
+  *, *::before, *::after {
+    box-sizing: border-box;
+  }
+
+  img, video, iframe, canvas, svg {
+    max-width: 100%;
+  }
+
+  body {
+    overflow-x: clip;
+    -webkit-text-size-adjust: 100%;
+    @apply bg-background text-foreground font-sans;
+    background-image:
+      radial-gradient(60rem 40rem at 12% -10%, hsl(var(--foreground) / 0.11), transparent 60%),
+      radial-gradient(50rem 35rem at 100% 0%, hsl(var(--accent) / 0.08), transparent 55%),
+      radial-gradient(45rem 40rem at 50% 120%, hsl(var(--primary) / 0.10), transparent 60%);
+    background-attachment: fixed;
+  }
+
+  .dark body {
+    background-image:
+      radial-gradient(circle at 72% 6%, rgba(205, 211, 201, .08), transparent 28rem),
+      linear-gradient(140deg, #0d0f0f, #070808 56%, #0b0c0c);
+  }
+
+  h1, h2, h3, h4 {
+    @apply font-display tracking-tight;
+  }
+
+  button, a { -webkit-tap-highlight-color: transparent; }
+}
+
+@layer utilities {
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+
+@layer components {
+  /* ── Sonora surfaces: hairline borders over near-black, no color washes ── */
+  .glass-card {
+    @apply relative bg-foreground/[0.025] border border-foreground/[0.09] shadow-[0_14px_35px_rgba(0,0,0,0.24)];
+  }
+
+  .glass-panel {
+    @apply relative rounded-2xl bg-foreground/[0.025] border border-foreground/[0.09]
+           shadow-[inset_0_1px_0_0_hsl(var(--foreground)/0.06),0_14px_35px_rgba(0,0,0,0.24)];
+  }
+
+  .glass-tile {
+    @apply relative rounded-xl bg-foreground/[0.055] border border-foreground/[0.08]
+           transition-colors duration-200 hover:bg-foreground/[0.09];
+  }
+
+  .glass-player {
+    @apply bg-zinc-950/85 backdrop-blur-3xl border-t border-foreground/[0.09]
+           shadow-[0_-20px_50px_rgba(0,0,0,0.35)];
+  }
+
+  .glass-sidebar {
+    @apply bg-black/60 backdrop-blur-3xl border-r border-foreground/[0.08];
+  }
+
+  /* Silver pill used for primary actions (play, sign in) */
+  .btn-silver {
+    @apply inline-flex items-center justify-center gap-2 rounded-full bg-gradient-to-br from-zinc-100 to-zinc-400
+           font-semibold text-zinc-950 shadow-lg transition-transform active:scale-95;
+  }
+  .btn-ghost-pill {
+    @apply inline-flex items-center justify-center rounded-full border border-foreground/[0.12] bg-foreground/[0.035]
+           text-zinc-300 transition-colors hover:bg-foreground/[0.08];
+  }
+
+  /* Four-bar brand mark */
+  .brand-bars { display: flex; align-items: center; width: 1.4rem; height: 1.4rem; gap: 2px; }
+  .brand-bars i { display: block; width: 2px; border-radius: 1rem; background: linear-gradient(#fff, #626662); }
+  .brand-bars i:nth-child(1) { height: 38%; }
+  .brand-bars i:nth-child(2) { height: 75%; }
+  .brand-bars i:nth-child(3) { height: 100%; }
+  .brand-bars i:nth-child(4) { height: 56%; }
+
+  /* Pill search field with a metallic lens */
+  .search-spotlight {
+    position: relative; display: flex; align-items: center; min-height: 2.75rem; padding: .28rem .42rem;
+    border: 1px solid rgba(255,255,255,.12); border-radius: 999px;
+    background: linear-gradient(100deg, rgba(255,255,255,.065), rgba(255,255,255,.018)), rgba(8,9,9,.78);
+    box-shadow: inset 0 1px rgba(255,255,255,.07), 0 10px 30px rgba(0,0,0,.2);
+    transition: border-color 180ms ease, box-shadow 180ms ease, background 180ms ease;
+  }
+  .search-spotlight:focus-within {
+    border-color: rgba(216,249,155,.25);
+    background: linear-gradient(100deg, rgba(255,255,255,.08), rgba(255,255,255,.025)), rgba(8,9,9,.9);
+  }
+  .search-lens {
+    display: grid; width: 2.15rem; height: 2.15rem; flex: 0 0 auto; place-items: center;
+    border: 1px solid rgba(255,255,255,.11); border-radius: 50%;
+    background: linear-gradient(145deg, #3f4240, #151616); color: #d7d9d5;
+    box-shadow: inset 0 1px rgba(255,255,255,.11);
+  }
+  .search-spotlight input {
+    min-width: 0; flex: 1; padding: 0 .75rem; border: 0; outline: 0; background: transparent;
+    color: #e6e7e4; font-size: .8rem;
+  }
+  .search-spotlight input::placeholder { color: #666a66; }
+
+  /* Vinyl disc for the featured card */
+  .vinyl-art {
+    position: absolute; top: 50%; right: -4rem; width: min(38vw, 28rem); aspect-ratio: 1; translate: 0 -50%;
+    border: 1px solid rgba(255,255,255,.13); border-radius: 50%;
+    background:
+      repeating-radial-gradient(circle, transparent 0 3px, rgba(255,255,255,.025) 4px, transparent 5px),
+      conic-gradient(from 35deg, #080909, #303330, #090a0a, #444744, #0c0d0d, #232523, #080909);
+    box-shadow: -30px 35px 80px rgba(0,0,0,.65), inset 0 0 25px rgba(255,255,255,.08);
+  }
+  .vinyl-art > span, .vinyl-art > i {
+    position: absolute; top: 50%; left: 50%; border-radius: 50%; translate: -50% -50%;
+  }
+  .vinyl-art > span { width: 72%; height: 72%; border: 1px solid rgba(255,255,255,.1); }
+  .vinyl-art > i { width: 34%; height: 34%; overflow: hidden; background: linear-gradient(145deg, #929691, #242624); }
+  .vinyl-art > i img { width: 100%; height: 100%; object-fit: cover; filter: grayscale(1) contrast(1.05); }
+  @media (max-width: 760px) {
+    .vinyl-art { right: -11rem; width: 26rem; opacity: .5; }
+  }
+
+  /* Music App Hover Effects */
+  .hover-lift {
+    @apply transition-all duration-300 hover:scale-105 hover:shadow-lg;
+  }
+  
+  .hover-glow {
+    @apply transition-all duration-300 hover:shadow-[var(--shadow-glow)];
+  }
+  
+  /* Gradient Backgrounds */
+  .bg-gradient-primary {
+    background: var(--gradient-primary);
+  }
+  
+  .bg-gradient-secondary {
+    background: var(--gradient-secondary);
+  }
+  
+  .bg-gradient-hero {
+    background: var(--gradient-hero);
+  }
+  
+  .bg-gradient-card {
+    background: var(--gradient-card);
+  }
+  
+  /* Music Visualizer Animation */
+  .music-bars {
+    @apply flex items-end gap-1 h-4;
+  }
+  
+  .music-bar {
+    @apply w-1 bg-primary rounded-full animate-pulse;
+    animation: music-bounce 0.8s ease-in-out infinite alternate;
+  }
+  
+  .music-bar:nth-child(2) {
+    animation-delay: 0.1s;
+  }
+  
+  .music-bar:nth-child(3) {
+    animation-delay: 0.2s;
+  }
+  
+  .music-bar:nth-child(4) {
+    animation-delay: 0.3s;
+  }
+}
+
+@keyframes music-bounce {
+  0% { transform: scaleY(0.3); }
+  100% { transform: scaleY(1); }
+}
+
+@keyframes pulse-subtle {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.02); }
+}
+
+.animate-pulse-subtle {
+  animation: pulse-subtle 3s ease-in-out infinite;
+}
+
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
+/* Reduced motion (user setting) */
+.reduce-motion *,
+.reduce-motion *::before,
+.reduce-motion *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+  scroll-behavior: auto !important;
+}
