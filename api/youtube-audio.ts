@@ -35,21 +35,28 @@ const STREAM_CONNECT_TIMEOUT_MS = 15_000;
 const AUDIO_CACHE = new Map<string, ResolvedAudio>();
 const RATE_LIMIT = new Map<string, number[]>();
 
-// Public Piped instances are best-effort upstreams. Override this list with
-// YOUTUBE_AUDIO_PIPED_INSTANCES (comma-separated API base URLs) in production.
+// Public Piped / Invidious instances are best-effort upstreams and are often
+// blocked by YouTube. Override with env vars (comma-separated base URLs):
+//   YOUTUBE_AUDIO_PIPED_INSTANCES, YOUTUBE_AUDIO_INVIDIOUS_INSTANCES
 const DEFAULT_PIPED_INSTANCES = [
+  'https://api.piped.private.coffee',
+  'https://pipedapi.ducks.party',
   'https://pipedapi.kavin.rocks',
   'https://pipedapi.leptons.xyz',
-  'https://pipedapi.nosebs.ru',
+  'https://pipedapi.adminforge.de',
+];
+const DEFAULT_INVIDIOUS_INSTANCES = [
+  'https://yewtu.be',
+  'https://invidious.nerdvpn.de',
+  'https://inv.nadeko.net',
 ];
 
-const getPipedInstances = (): string[] => {
-  const configured = process.env.YOUTUBE_AUDIO_PIPED_INSTANCES
-    ?.split(',')
-    .map((value) => value.trim().replace(/\/$/, ''))
-    .filter(Boolean);
-  return configured?.length ? configured : DEFAULT_PIPED_INSTANCES;
+const parseList = (value: string | undefined, fallback: string[]): string[] => {
+  const list = value?.split(',').map((v) => v.trim().replace(/\/$/, '')).filter(Boolean);
+  return list?.length ? list : fallback;
 };
+const getPipedInstances = () => parseList(process.env.YOUTUBE_AUDIO_PIPED_INSTANCES, DEFAULT_PIPED_INSTANCES);
+const getInvidiousInstances = () => parseList(process.env.YOUTUBE_AUDIO_INVIDIOUS_INSTANCES, DEFAULT_INVIDIOUS_INSTANCES);
 
 const setCommonHeaders = (res: ServerResponse) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -92,75 +99,145 @@ const isRateLimited = (req: IncomingMessage): boolean => {
   return false;
 };
 
+const mimeFromFormat = (mime?: string, format?: string, type?: string): string => {
+  const m = (mime || type || '').split(';')[0].trim().toLowerCase();
+  if (m.startsWith('audio/')) return m;
+  const f = (format || '').toLowerCase();
+  if (f.includes('webm') || f.includes('opus')) return 'audio/webm';
+  if (f.includes('mp3')) return 'audio/mpeg';
+  return 'audio/mp4';
+};
+
+const isAudioStream = (stream: AudioStream): boolean => {
+  if (!stream?.url || stream.videoOnly) return false;
+  const mime = (stream.mimeType || '').toLowerCase();
+  if (mime.startsWith('video/')) return false;
+  const fmt = (stream.format || '').toLowerCase();
+  return mime.startsWith('audio/') || /m4a|webm|opus|mp3|aac|mp4a/.test(fmt);
+};
+
+const finish = (
+  videoId: string,
+  meta: { title?: string; uploader?: string; duration?: number },
+  url: string,
+  mimeType: string,
+  format: string,
+  bitrate: number,
+  quality: string,
+  instanceBase: string,
+): ResolvedAudio => {
+  const directUrl = new URL(url);
+  if (directUrl.protocol !== 'https:') throw new Error('non-HTTPS stream');
+  const resolved: ResolvedAudio = {
+    videoId,
+    title: String(meta.title || ''),
+    uploader: String(meta.uploader || ''),
+    duration: Number(meta.duration || 0),
+    directUrl: directUrl.toString(),
+    mimeType,
+    format: format.toUpperCase(),
+    bitrate,
+    quality: quality || (bitrate ? `${Math.round(bitrate / 1000)} kbps` : 'high quality'),
+    instanceBase,
+    expiresAt: Date.now() + CACHE_TTL_MS,
+  };
+  return resolved;
+};
+
+const fetchJson = async (url: string) => {
+  const response = await fetch(url, {
+    headers: { Accept: 'application/json', 'User-Agent': USER_AGENT },
+    signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
+};
+
+// Prefer AAC (audio/mp4): it plays everywhere, including iOS and just_audio.
+const pickBest = <T extends { mimeType?: string; bitrate?: number }>(streams: T[]): T | undefined =>
+  [...streams].sort((a, b) => {
+    const am = a.mimeType === 'audio/mp4' ? 1 : 0;
+    const bm = b.mimeType === 'audio/mp4' ? 1 : 0;
+    if (am !== bm) return bm - am;
+    return Number(b.bitrate || 0) - Number(a.bitrate || 0);
+  })[0];
+
+const resolveViaPiped = async (videoId: string, base: string): Promise<ResolvedAudio> => {
+  const payload = await fetchJson(`${base}/streams/${encodeURIComponent(videoId)}`) as {
+    title?: string; uploader?: string; duration?: number; audioStreams?: AudioStream[]; error?: string;
+  };
+  const all = Array.isArray(payload.audioStreams) ? payload.audioStreams : [];
+  const usable = all.filter(isAudioStream).map((st) => ({ ...st, mimeType: mimeFromFormat(st.mimeType, st.format) }));
+  const best = pickBest(usable);
+  if (!best?.url) {
+    throw new Error(`${all.length} audio streams, none usable${payload.error ? ` (${payload.error})` : ''}`);
+  }
+  return finish(videoId, payload, best.url, best.mimeType!, best.format || 'M4A', Number(best.bitrate || 0), String(best.quality || ''), base);
+};
+
+const resolveViaInvidious = async (videoId: string, base: string): Promise<ResolvedAudio> => {
+  const payload = await fetchJson(`${base}/api/v1/videos/${encodeURIComponent(videoId)}?local=true`) as {
+    title?: string; author?: string; lengthSeconds?: number; error?: string;
+    adaptiveFormats?: Array<{ url?: string; type?: string; bitrate?: string | number; audioQuality?: string }>;
+  };
+  if (payload.error) throw new Error(payload.error);
+  const all = payload.adaptiveFormats || [];
+  const usable = all
+    .filter((f) => f.url && (f.type || '').startsWith('audio/'))
+    .map((f) => ({ url: f.url!, mimeType: mimeFromFormat(undefined, undefined, f.type), bitrate: Number(f.bitrate || 0), quality: f.audioQuality || '' }));
+  const best = pickBest(usable);
+  if (!best) throw new Error(`${all.length} formats, no audio`);
+  const absolute = new URL(best.url, base).toString();
+  return finish(videoId, { title: payload.title, uploader: payload.author, duration: payload.lengthSeconds }, absolute, best.mimeType, best.mimeType === 'audio/webm' ? 'WEBM' : 'M4A', best.bitrate, best.quality, base);
+};
+
+// Optional last resort: extract directly with youtubei.js (dependency is loaded
+// lazily so the API still works if it is not installed). googlevideo URLs are
+// IP-bound, so they are always played through this function's proxy.
+const resolveViaInnertube = async (videoId: string): Promise<ResolvedAudio> => {
+  const mod: any = await import('youtubei.js');
+  const Innertube = mod.Innertube || mod.default?.Innertube || mod.default;
+  const yt = await Innertube.create({ retrieve_player: true, generate_session_locally: true });
+  let lastError = 'no format';
+  for (const client of ['IOS', 'ANDROID', 'TV_EMBEDDED']) {
+    try {
+      const info = await yt.getBasicInfo(videoId, client);
+      const format = info.chooseFormat({ type: 'audio', quality: 'best', format: 'mp4a' })
+        || info.chooseFormat({ type: 'audio', quality: 'best' });
+      const url: string | undefined = format?.url || (await format?.decipher?.(yt.session.player));
+      if (!url) throw new Error('no url');
+      return finish(
+        videoId,
+        { title: info.basic_info?.title, uploader: info.basic_info?.author, duration: info.basic_info?.duration },
+        url,
+        mimeFromFormat(format.mime_type),
+        (format.mime_type || '').includes('webm') ? 'WEBM' : 'M4A',
+        Number(format.bitrate || 0),
+        '',
+        'innertube',
+      );
+    } catch (error) {
+      lastError = `${client}: ${error instanceof Error ? error.message : 'failed'}`;
+    }
+  }
+  throw new Error(lastError);
+};
+
 const resolveAudio = async (videoId: string, forceRefresh = false): Promise<ResolvedAudio> => {
   const cached = AUDIO_CACHE.get(videoId);
   if (!forceRefresh && cached && cached.expiresAt > Date.now()) return cached;
   AUDIO_CACHE.delete(videoId);
 
+  const attempts: Array<[string, () => Promise<ResolvedAudio>]> = [
+    ...getPipedInstances().map((b): [string, () => Promise<ResolvedAudio>] => [b, () => resolveViaPiped(videoId, b)]),
+    ...getInvidiousInstances().map((b): [string, () => Promise<ResolvedAudio>] => [b, () => resolveViaInvidious(videoId, b)]),
+    ['innertube', () => resolveViaInnertube(videoId)],
+  ];
+
   const errors: string[] = [];
-  for (const instanceBase of getPipedInstances()) {
+  for (const [label, run] of attempts) {
     try {
-      const response = await fetch(`${instanceBase}/streams/${encodeURIComponent(videoId)}`, {
-        headers: {
-          Accept: 'application/json',
-          'User-Agent': USER_AGENT,
-        },
-        signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
-      });
-      if (!response.ok) {
-        errors.push(`${instanceBase} returned ${response.status}`);
-        continue;
-      }
-
-      const payload = (await response.json()) as {
-        title?: string;
-        uploader?: string;
-        duration?: number;
-        audioStreams?: AudioStream[];
-      };
-      const streams = Array.isArray(payload.audioStreams)
-        ? payload.audioStreams
-            .filter((stream) => {
-              if (!stream?.url || stream.videoOnly) return false;
-              const mimeType = (stream.mimeType || '').split(';')[0].toLowerCase();
-              const format = (stream.format || '').toLowerCase();
-              return mimeType === 'audio/mp4' || mimeType === 'audio/webm' || format === 'm4a' || format === 'webm';
-            })
-            .map((stream) => {
-              const mimeType = (stream.mimeType || '').split(';')[0].toLowerCase();
-              const format = (stream.format || '').toUpperCase();
-              const normalizedMime = mimeType || (format === 'WEBM' ? 'audio/webm' : 'audio/mp4');
-              return { ...stream, mimeType: normalizedMime };
-            })
-        : [];
-
-      streams.sort((a, b) => Number(b.bitrate || 0) - Number(a.bitrate || 0));
-      const selected = streams[0];
-      if (!selected?.url) {
-        errors.push(`${instanceBase} returned no audio-only formats`);
-        continue;
-      }
-
-      const directUrl = new URL(selected.url);
-      if (directUrl.protocol !== 'https:') {
-        errors.push(`${instanceBase} returned a non-HTTPS stream`);
-        continue;
-      }
-
-      const format = (selected.format || (selected.mimeType === 'audio/webm' ? 'WEBM' : 'M4A')).toUpperCase();
-      const resolved: ResolvedAudio = {
-        videoId,
-        title: String(payload.title || ''),
-        uploader: String(payload.uploader || ''),
-        duration: Number(payload.duration || 0),
-        directUrl: directUrl.toString(),
-        mimeType: selected.mimeType || 'audio/mp4',
-        format,
-        bitrate: Number(selected.bitrate || 0),
-        quality: String(selected.quality || (selected.bitrate ? `${Math.round(selected.bitrate / 1000)} kbps` : 'high quality')),
-        instanceBase,
-        expiresAt: Date.now() + CACHE_TTL_MS,
-      };
+      const resolved = await run();
       AUDIO_CACHE.set(videoId, resolved);
       if (AUDIO_CACHE.size > 500) {
         const oldest = AUDIO_CACHE.keys().next().value;
@@ -168,11 +245,10 @@ const resolveAudio = async (videoId: string, forceRefresh = false): Promise<Reso
       }
       return resolved;
     } catch (error) {
-      errors.push(`${instanceBase}: ${error instanceof Error ? error.message : 'upstream error'}`);
+      errors.push(`${label.replace('https://', '')}: ${error instanceof Error ? error.message : 'error'}`);
     }
   }
-
-  throw new Error(`Unable to resolve an audio stream. ${errors.slice(0, 2).join('; ')}`);
+  throw new Error(`Unable to resolve an audio stream. ${errors.join(' | ')}`);
 };
 
 const streamAudio = async (
@@ -313,7 +389,7 @@ export default async function handler(req: ApiRequest, res: ServerResponse) {
     // Public Piped CDN URLs already provide CORS and byte-range support.
     // Play those directly so a serverless function does not stay open for an
     // entire song. Use our header-aware proxy only for raw Google Video URLs.
-    const streamUrl = directHost.endsWith('googlevideo.com')
+    const streamUrl = directHost.endsWith('googlevideo.com') || audio.instanceBase === 'innertube'
       ? proxyStreamUrl
       : audio.directUrl;
     const metadata = {
