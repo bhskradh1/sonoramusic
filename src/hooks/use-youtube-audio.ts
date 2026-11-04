@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { RefObject } from 'react';
 import { getOfflineTrack } from '@/lib/offlineLibrary';
 import { resolveYoutubeAudioStream } from '@/lib/youtubeAudioApi';
@@ -31,7 +31,7 @@ interface UseYoutubeAudioOptions {
 }
 
 interface UseYoutubeAudioResult {
-  audioRef: RefObject<HTMLAudioElement>;
+  audioRef: ((node: HTMLAudioElement | null) => void) & { current: HTMLAudioElement | null };
   isLoading: boolean;
   currentTime: number;
   duration: number;
@@ -79,11 +79,19 @@ export const useYoutubeAudio = (
     onPlaybackError,
   }: UseYoutubeAudioOptions,
 ): UseYoutubeAudioResult => {
-  const audioRef = useRef<HTMLAudioElement>(null);
+  const audioObjRef = useRef<HTMLAudioElement | null>(null);
+  const [audioEl, setAudioEl] = useState<HTMLAudioElement | null>(null);
+  // Callback ref: re-runs effects when the <audio> element mounts later.
+  const audioRef = useMemo(() => {
+    const cb = ((node: HTMLAudioElement | null) => {
+      audioObjRef.current = node;
+      setAudioEl(node);
+    }) as ((node: HTMLAudioElement | null) => void) & { current: HTMLAudioElement | null };
+    Object.defineProperty(cb, 'current', { get: () => audioObjRef.current, set: (v) => { audioObjRef.current = v; } });
+    return cb;
+  }, []);
   const isPlayingRef = useRef(isPlaying);
   const nativeActiveRef = useRef(false);
-  const lastNativePositionRef = useRef(0);
-  const lastAudioProgressRef = useRef(0);
   const onEndedRef = useRef(onEnded);
   const onPlaybackErrorRef = useRef(onPlaybackError);
   const [isLoading, setIsLoading] = useState(false);
@@ -96,20 +104,12 @@ export const useYoutubeAudio = (
   onPlaybackErrorRef.current = onPlaybackError;
 
   useEffect(() => {
-    const audio = audioRef.current;
+    const audio = audioEl;
     if (!audio) return;
 
     const updateTime = () => {
-      const nextTime = audio.currentTime || 0;
-      setCurrentTime(nextTime);
-
-      // A waiting event can fire during a stream without meaning playback is
-      // still stalled. Advancing media time is the reliable signal that audio
-      // has resumed, so never leave the player spinner on in that state.
-      if (!audio.paused && nextTime > lastAudioProgressRef.current + 0.05) {
-        setIsLoading(false);
-      }
-      lastAudioProgressRef.current = nextTime;
+      setCurrentTime(audio.currentTime || 0);
+      if (!audio.paused && audio.readyState >= 3) setIsLoading(false);
     };
     const updateDuration = () => setDuration(Number.isFinite(audio.duration) ? audio.duration : 0);
     const handleLoading = () => setIsLoading(true);
@@ -133,88 +133,35 @@ export const useYoutubeAudio = (
     audio.addEventListener('loadstart', handleLoading);
     audio.addEventListener('waiting', handleLoading);
     audio.addEventListener('canplay', handleReady);
-    audio.addEventListener('canplaythrough', handleReady);
     audio.addEventListener('playing', handleReady);
     audio.addEventListener('pause', handleReady);
     audio.addEventListener('ended', handleEnded);
     audio.addEventListener('error', handleError);
 
-    // Some stream providers do not emit regular timeupdate events. Poll the
-    // media element while it is actively playing so the visible timer and
-    // progress bar continue to move for those streams too.
-    const progressPoll = window.setInterval(() => {
-      if (!audio.paused && !audio.ended) {
-        updateTime();
-        updateDuration();
-      }
-    }, 250);
-
     return () => {
-      window.clearInterval(progressPoll);
       audio.removeEventListener('timeupdate', updateTime);
       audio.removeEventListener('durationchange', updateDuration);
       audio.removeEventListener('loadedmetadata', updateDuration);
       audio.removeEventListener('loadstart', handleLoading);
       audio.removeEventListener('waiting', handleLoading);
       audio.removeEventListener('canplay', handleReady);
-      audio.removeEventListener('canplaythrough', handleReady);
       audio.removeEventListener('playing', handleReady);
       audio.removeEventListener('pause', handleReady);
       audio.removeEventListener('ended', handleEnded);
       audio.removeEventListener('error', handleError);
     };
-  }, [offlineOnly]);
-
-  // Keep this hook's status/progress accurate when Flutter owns the audio
-  // element. Native playback does not emit HTMLAudioElement events.
-  useEffect(() => {
-    if (!nativePlayback) return;
-
-    const handleNativeAudioState = (event: Event) => {
-      const detail = (event as CustomEvent<{
-        event?: string;
-        position?: number;
-        duration?: number;
-        processingState?: string;
-      }>).detail;
-      if (!detail) return;
-
-      if (detail.event === 'error' || detail.event === 'stopped' || detail.event === 'ended') {
-        setIsLoading(false);
-        if (detail.event === 'error') {
-          setError('The native audio player could not load this track.');
-        }
-        return;
-      }
-
-      let positionAdvanced = false;
-      if (typeof detail.position === 'number' && Number.isFinite(detail.position)) {
-        positionAdvanced = detail.position > lastNativePositionRef.current + 0.05;
-        lastNativePositionRef.current = detail.position;
-        setCurrentTime(detail.position);
-      }
-      if (typeof detail.duration === 'number' && Number.isFinite(detail.duration)) {
-        setDuration(detail.duration);
-      }
-
-      const waiting = detail.processingState === 'loading' || detail.processingState === 'buffering';
-      setIsLoading(waiting && !positionAdvanced);
-    };
-
-    window.addEventListener('melodiya-native-audio-state', handleNativeAudioState);
-    return () => window.removeEventListener('melodiya-native-audio-state', handleNativeAudioState);
-  }, [nativePlayback]);
+  }, [offlineOnly, audioEl]);
 
   useEffect(() => {
-    const audio = audioRef.current;
+    const audio = audioEl;
     if (audio) audio.volume = Math.max(0, Math.min(1, volume));
     if (nativePlayback && nativeActiveRef.current) {
       postNativeAudioCommand({ command: 'volume', volume: Math.max(0, Math.min(1, volume)) });
     }
-  }, [volume, nativePlayback]);
+  }, [volume, nativePlayback, audioEl]);
 
   useEffect(() => {
-    const audio = audioRef.current;
+    const audio = audioEl;
     if (!audio) return;
 
     if (!enabled || !track?.videoId) {
@@ -233,8 +180,6 @@ export const useYoutubeAudio = (
     const controller = new AbortController();
     let objectUrl: string | null = null;
     nativeActiveRef.current = false;
-    lastNativePositionRef.current = 0;
-    lastAudioProgressRef.current = 0;
     setIsLoading(true);
     setError(null);
     setCurrentTime(0);
@@ -337,10 +282,11 @@ export const useYoutubeAudio = (
     track?.title,
     track?.artist,
     track?.thumbnail,
+    audioEl,
   ]);
 
   useEffect(() => {
-    const audio = audioRef.current;
+    const audio = audioObjRef.current;
     if (!enabled) return;
     if (nativePlayback) {
       if (nativeActiveRef.current) {
@@ -357,7 +303,7 @@ export const useYoutubeAudio = (
     } else {
       audio.pause();
     }
-  }, [enabled, isPlaying, nativePlayback, track?.videoId]);
+  }, [enabled, isPlaying, nativePlayback, track?.videoId, audioEl]);
 
   const play = useCallback(async () => {
     if (nativePlayback) {
@@ -372,7 +318,7 @@ export const useYoutubeAudio = (
       return;
     }
 
-    const audio = audioRef.current;
+    const audio = audioObjRef.current;
     if (!audio?.src) {
       setError('The audio stream is still loading.');
       return;
@@ -400,7 +346,7 @@ export const useYoutubeAudio = (
       if (nativeActiveRef.current) postNativeAudioCommand({ command: 'seek', position: Math.max(0, seconds) });
       return;
     }
-    const audio = audioRef.current;
+    const audio = audioObjRef.current;
     if (!audio) return;
     const bounded = Math.max(0, audio.duration ? Math.min(seconds, audio.duration) : seconds);
     audio.currentTime = bounded;
