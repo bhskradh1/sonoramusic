@@ -96,7 +96,13 @@ export const MusicPlayer: React.FC<MusicPlayerProps> = ({
   // anything without a direct audio URL must use the real audio path (HTML audio
   // or the Flutter native player), never the hidden YouTube iframe, which Android
   // suspends in the background.
-  const needsYoutubeAudio = Boolean(offlineMode || (currentTrack?.videoId && !nativeAudioUrl));
+  // If the audio API cannot deliver a track, fall back to the YouTube iframe for
+  // that track so online music still plays (foreground only).
+  const [streamFailedId, setStreamFailedId] = useState<string | null>(null);
+  const needsYoutubeAudio = Boolean(
+    offlineMode ||
+    (currentTrack?.videoId && !nativeAudioUrl && streamFailedId !== currentTrack.videoId),
+  );
   // In the Flutter Android wrapper, both online YouTube streams and saved
   // IndexedDB Blobs are played by just_audio so Android can keep them alive
   // through its foreground media service. Browsers/PWAs use HTMLAudioElement.
@@ -137,6 +143,10 @@ export const MusicPlayer: React.FC<MusicPlayerProps> = ({
       volume: (normalizeVolume ? 75 : (isMuted ? 0 : volume[0])) / 100,
       onEnded: () => triggerNextTrackRef.current(),
       onPlaybackError: () => {
+        if (!offlineMode && currentTrack?.videoId) {
+          setStreamFailedId(currentTrack.videoId);
+          return;
+        }
         if (isPlaying) onPlayPause();
       },
     },
@@ -398,6 +408,7 @@ export const MusicPlayer: React.FC<MusicPlayerProps> = ({
       }
       if (detail.event === 'error') {
         setIsLoading(false);
+        if (!offlineMode && currentTrack?.videoId) setStreamFailedId(currentTrack.videoId);
         toast({
           title: 'Native audio could not be played',
           description: detail.message || 'Check that the audio URL is a valid, accessible HTTPS stream.',
@@ -422,7 +433,7 @@ export const MusicPlayer: React.FC<MusicPlayerProps> = ({
 
     window.addEventListener('melodiya-native-audio-state', handleNativeAudioState);
     return () => window.removeEventListener('melodiya-native-audio-state', handleNativeAudioState);
-  }, [useNativeAudio, isPlaying, onPlayPause, toast, triggerNextTrack]);
+  }, [useNativeAudio, isPlaying, onPlayPause, toast, triggerNextTrack, offlineMode, currentTrack?.videoId]);
 
   useEffect(() => {
     const handleMusicAction = (event: CustomEvent) => {
