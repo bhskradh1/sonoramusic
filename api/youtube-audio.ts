@@ -30,7 +30,7 @@ const VIDEO_ID_PATTERN = /^[a-zA-Z0-9_-]{11}$/;
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
 const CACHE_TTL_MS = 3 * 60 * 1000;
-const UPSTREAM_TIMEOUT_MS = 12_000;
+const UPSTREAM_TIMEOUT_MS = 5_000;
 const STREAM_CONNECT_TIMEOUT_MS = 15_000;
 const AUDIO_CACHE = new Map<string, ResolvedAudio>();
 const RATE_LIMIT = new Map<string, number[]>();
@@ -194,10 +194,29 @@ const resolveViaInvidious = async (videoId: string, base: string): Promise<Resol
 // Optional last resort: extract directly with youtubei.js (dependency is loaded
 // lazily so the API still works if it is not installed). googlevideo URLs are
 // IP-bound, so they are always played through this function's proxy.
+let innertubePromise: Promise<any> | null = null;
+const getInnertube = (): Promise<any> => {
+  if (!innertubePromise) {
+    innertubePromise = (async () => {
+      const mod: any = await import('youtubei.js');
+      const Innertube = mod.Innertube || mod.default?.Innertube || mod.default;
+      return Innertube.create({ retrieve_player: true, generate_session_locally: true });
+    })().catch((error) => {
+      innertubePromise = null; // retry next request
+      throw error;
+    });
+  }
+  return innertubePromise;
+};
+
+const withTimeout = <T,>(promise: Promise<T>, ms: number, label: string): Promise<T> =>
+  new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out`)), ms);
+    promise.then((v) => { clearTimeout(timer); resolve(v); }, (e) => { clearTimeout(timer); reject(e); });
+  });
+
 const resolveViaInnertube = async (videoId: string): Promise<ResolvedAudio> => {
-  const mod: any = await import('youtubei.js');
-  const Innertube = mod.Innertube || mod.default?.Innertube || mod.default;
-  const yt = await Innertube.create({ retrieve_player: true, generate_session_locally: true });
+  const yt = await getInnertube();
   let lastError = 'no format';
   for (const client of ['IOS', 'ANDROID', 'TV_EMBEDDED']) {
     try {
@@ -228,27 +247,36 @@ const resolveAudio = async (videoId: string, forceRefresh = false): Promise<Reso
   if (!forceRefresh && cached && cached.expiresAt > Date.now()) return cached;
   AUDIO_CACHE.delete(videoId);
 
-  const attempts: Array<[string, () => Promise<ResolvedAudio>]> = [
-    ...getPipedInstances().map((b): [string, () => Promise<ResolvedAudio>] => [b, () => resolveViaPiped(videoId, b)]),
-    ...getInvidiousInstances().map((b): [string, () => Promise<ResolvedAudio>] => [b, () => resolveViaInvidious(videoId, b)]),
-    ['innertube', () => resolveViaInnertube(videoId)],
-  ];
-
   const errors: string[] = [];
-  for (const [label, run] of attempts) {
-    try {
-      const resolved = await run();
-      AUDIO_CACHE.set(videoId, resolved);
-      if (AUDIO_CACHE.size > 500) {
-        const oldest = AUDIO_CACHE.keys().next().value;
-        if (oldest) AUDIO_CACHE.delete(oldest);
-      }
-      return resolved;
-    } catch (error) {
-      errors.push(`${label.replace('https://', '')}: ${error instanceof Error ? error.message : 'error'}`);
+  const store = (resolved: ResolvedAudio) => {
+    AUDIO_CACHE.set(videoId, resolved);
+    if (AUDIO_CACHE.size > 500) {
+      const oldest = AUDIO_CACHE.keys().next().value;
+      if (oldest) AUDIO_CACHE.delete(oldest);
     }
+    return resolved;
+  };
+
+  // 1) Direct extraction first: it is the fastest and most reliable source here.
+  try {
+    return store(await withTimeout(resolveViaInnertube(videoId), 20_000, 'innertube'));
+  } catch (error) {
+    errors.push(`innertube: ${error instanceof Error ? error.message : 'error'}`);
   }
-  throw new Error(`Unable to resolve an audio stream. ${errors.join(' | ')}`);
+
+  // 2) Public Piped / Invidious instances, all at once; first success wins.
+  const racers: Array<Promise<ResolvedAudio>> = [
+    ...getPipedInstances().map((b) =>
+      resolveViaPiped(videoId, b).catch((e) => { errors.push(`${b.replace('https://', '')}: ${e instanceof Error ? e.message : 'error'}`); throw e; })),
+    ...getInvidiousInstances().map((b) =>
+      resolveViaInvidious(videoId, b).catch((e) => { errors.push(`${b.replace('https://', '')}: ${e instanceof Error ? e.message : 'error'}`); throw e; })),
+  ];
+  try {
+    return store(await Promise.any(racers));
+  } catch {
+    /* all failed; errors already collected */
+  }
+  throw new Error(`Unable to resolve an audio stream. ${errors.slice(0, 8).join(' | ')}`);
 };
 
 const streamAudio = async (
