@@ -82,6 +82,7 @@ export const MusicPlayer: React.FC<MusicPlayerProps> = ({
   const prevTrackIdRef = useRef<string | null>(null);
   const previousNativeAudioUrlRef = useRef<string | null>(null);
   const lastNativeExternalPlayingRef = useRef<boolean | null>(null);
+  const lastNativePositionRef = useRef(0);
   const playerRef = useRef<any>(null);
   const desiredPlayingRef = useRef(isPlaying);
   desiredPlayingRef.current = isPlaying;
@@ -119,6 +120,15 @@ export const MusicPlayer: React.FC<MusicPlayerProps> = ({
       return false;
     }
   }, []);
+
+  // Reset native progress/loading state whenever the selected song changes.
+  // The Flutter bridge reports when the new source is ready and starts playing.
+  useEffect(() => {
+    lastNativePositionRef.current = 0;
+    setNativeCurrentTime(0);
+    setNativeDuration(0);
+    setIsLoading(Boolean(useNativeAudio));
+  }, [currentTrack?.videoId, useNativeAudio]);
 
   // The keep-alive layer remains active for browser/PWA playback, while the
   // selected catalogue track itself is played by the real audio element below.
@@ -403,7 +413,12 @@ export const MusicPlayer: React.FC<MusicPlayerProps> = ({
       if (!detail) return;
 
       if (detail.event === 'ended') {
+        setIsLoading(false);
         triggerNextTrack();
+        return;
+      }
+      if (detail.event === 'stopped') {
+        setIsLoading(false);
         return;
       }
       if (detail.event === 'error') {
@@ -417,9 +432,21 @@ export const MusicPlayer: React.FC<MusicPlayerProps> = ({
         return;
       }
 
-      if (typeof detail.position === 'number') setNativeCurrentTime(detail.position);
-      if (typeof detail.duration === 'number') setNativeDuration(detail.duration);
-      setIsLoading(detail.processingState === 'loading' || detail.processingState === 'buffering');
+      let positionAdvanced = false;
+      if (typeof detail.position === 'number' && Number.isFinite(detail.position)) {
+        positionAdvanced = detail.position > lastNativePositionRef.current + 0.05;
+        lastNativePositionRef.current = detail.position;
+        setNativeCurrentTime(detail.position);
+      }
+      if (typeof detail.duration === 'number' && Number.isFinite(detail.duration)) {
+        setNativeDuration(detail.duration);
+      }
+
+      const nativeIsWaiting =
+        detail.processingState === 'loading' || detail.processingState === 'buffering';
+      // A few native engines report buffering after audio has resumed. When
+      // the playback position advances, the track is running: clear the spinner.
+      setIsLoading(nativeIsWaiting && !positionAdvanced);
 
       if (detail.syncPlaying && typeof detail.playing === 'boolean') {
         if (detail.playing === isPlaying) {

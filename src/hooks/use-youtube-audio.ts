@@ -82,6 +82,7 @@ export const useYoutubeAudio = (
   const audioRef = useRef<HTMLAudioElement>(null);
   const isPlayingRef = useRef(isPlaying);
   const nativeActiveRef = useRef(false);
+  const lastNativePositionRef = useRef(0);
   const onEndedRef = useRef(onEnded);
   const onPlaybackErrorRef = useRef(onPlaybackError);
   const [isLoading, setIsLoading] = useState(false);
@@ -139,6 +140,46 @@ export const useYoutubeAudio = (
     };
   }, [offlineOnly]);
 
+  // Keep this hook's status/progress accurate when Flutter owns the audio
+  // element. Native playback does not emit HTMLAudioElement events.
+  useEffect(() => {
+    if (!nativePlayback) return;
+
+    const handleNativeAudioState = (event: Event) => {
+      const detail = (event as CustomEvent<{
+        event?: string;
+        position?: number;
+        duration?: number;
+        processingState?: string;
+      }>).detail;
+      if (!detail) return;
+
+      if (detail.event === 'error' || detail.event === 'stopped' || detail.event === 'ended') {
+        setIsLoading(false);
+        if (detail.event === 'error') {
+          setError('The native audio player could not load this track.');
+        }
+        return;
+      }
+
+      let positionAdvanced = false;
+      if (typeof detail.position === 'number' && Number.isFinite(detail.position)) {
+        positionAdvanced = detail.position > lastNativePositionRef.current + 0.05;
+        lastNativePositionRef.current = detail.position;
+        setCurrentTime(detail.position);
+      }
+      if (typeof detail.duration === 'number' && Number.isFinite(detail.duration)) {
+        setDuration(detail.duration);
+      }
+
+      const waiting = detail.processingState === 'loading' || detail.processingState === 'buffering';
+      setIsLoading(waiting && !positionAdvanced);
+    };
+
+    window.addEventListener('melodiya-native-audio-state', handleNativeAudioState);
+    return () => window.removeEventListener('melodiya-native-audio-state', handleNativeAudioState);
+  }, [nativePlayback]);
+
   useEffect(() => {
     const audio = audioRef.current;
     if (audio) audio.volume = Math.max(0, Math.min(1, volume));
@@ -167,6 +208,7 @@ export const useYoutubeAudio = (
     const controller = new AbortController();
     let objectUrl: string | null = null;
     nativeActiveRef.current = false;
+    lastNativePositionRef.current = 0;
     setIsLoading(true);
     setError(null);
     setCurrentTime(0);
