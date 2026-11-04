@@ -91,7 +91,12 @@ export const MusicPlayer: React.FC<MusicPlayerProps> = ({
   const { notifications: notificationsEnabled, normalizeVolume, autoOpenNowPlaying, defaultVolume, crossfade, crossfadeSeconds } = useSettings();
   const nativeAudioUrl = currentTrack?.audioUrl ?? currentTrack?.audio_url ?? null;
   const hasNativeAudioBridge = typeof window !== 'undefined' && Boolean(window.MelodiyaNativeAudio);
-  const needsYoutubeAudio = Boolean(offlineMode || (currentTrack?.source === 'youtube_music' && !nativeAudioUrl));
+  // Every track in this app is a YouTube video ID. Tracks from playlists, liked
+  // songs, history etc. don't carry source:'youtube_music', so don't depend on it:
+  // anything without a direct audio URL must use the real audio path (HTML audio
+  // or the Flutter native player), never the hidden YouTube iframe, which Android
+  // suspends in the background.
+  const needsYoutubeAudio = Boolean(offlineMode || (currentTrack?.videoId && !nativeAudioUrl));
   // In the Flutter Android wrapper, both online YouTube streams and saved
   // IndexedDB Blobs are played by just_audio so Android can keep them alive
   // through its foreground media service. Browsers/PWAs use HTMLAudioElement.
@@ -111,7 +116,9 @@ export const MusicPlayer: React.FC<MusicPlayerProps> = ({
 
   // The keep-alive layer remains active for browser/PWA playback, while the
   // selected catalogue track itself is played by the real audio element below.
-  useBackgroundAudio(isPlaying);
+  // In the Flutter app the native just_audio service keeps playback alive. The
+  // silent <audio> loop would steal Android audio focus from it, so skip it there.
+  useBackgroundAudio(isPlaying && !useNativeAudio);
 
   const youtubeAudio = useYoutubeAudio(
     needsYoutubeAudio && currentTrack ? {
@@ -521,7 +528,7 @@ export const MusicPlayer: React.FC<MusicPlayerProps> = ({
       navigator.mediaSession.metadata = new MediaMetadata({
         title: currentTrack.title,
         artist: currentTrack.artist,
-        album: (currentTrack.source === 'youtube_music' || offlineMode) ? 'YouTube Music' : 'Sonora',
+        album: (needsYoutubeAudio || offlineMode) ? 'YouTube Music' : 'Sonora',
         artwork: [
           { src: currentTrack.thumbnail, sizes: '96x96', type: 'image/jpeg' },
           { src: currentTrack.thumbnail, sizes: '256x256', type: 'image/jpeg' },

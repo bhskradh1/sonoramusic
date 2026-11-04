@@ -151,12 +151,18 @@ export const PlaylistDetailView: React.FC<PlaylistDetailViewProps> = ({
         })),
         setDownloadProgress,
       );
-      setIsOfflineDownloaded(true);
+      const partial = result.failed.length > 0;
+      setIsOfflineDownloaded(!partial);
       toast({
-        title: result.skipped ? 'Playlist already downloaded' : 'Playlist downloaded',
-        description: result.skipped
-          ? `“${playlist.name}” is ready for offline playback.`
-          : `${result.downloaded} tracks from “${playlist.name}” are saved on this device.`,
+        title: partial
+          ? `Downloaded ${result.downloaded} of ${songs.length} tracks`
+          : result.skipped ? 'Playlist already downloaded' : 'Playlist downloaded',
+        description: partial
+          ? `${result.failed.length} failed (${result.failed.slice(0, 2).join(', ')}${result.failed.length > 2 ? '…' : ''}). Tap download again to retry only the missing ones. ${result.firstError ?? ''}`
+          : result.skipped
+            ? `“${playlist.name}” is ready for offline playback.`
+            : `${result.downloaded} tracks from “${playlist.name}” are saved on this device.`,
+        variant: partial ? 'destructive' : undefined,
       });
     } catch (error) {
       setIsOfflineDownloaded(false);
