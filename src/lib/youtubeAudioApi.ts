@@ -19,7 +19,7 @@ const DEFAULT_AUDIO_API_URL = 'https://sonorasound.vercel.app/api/youtube-audio'
 const METADATA_TIMEOUT_MS = 30_000;
 const PROVIDER_DOWNLOAD_TIMEOUT_MS = 4 * 60_000;
 const PROXY_RANGE_TIMEOUT_MS = 50_000;
-const PROXY_CHUNK_SIZE = 512 * 1024;
+const PROXY_CHUNK_SIZE = 2 * 1024 * 1024;
 const MAX_AUDIO_BYTES = 150 * 1024 * 1024;
 
 export const getYoutubeAudioApiUrls = (): string[] => {

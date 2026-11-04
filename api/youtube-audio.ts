@@ -82,7 +82,7 @@ const isRateLimited = (req: IncomingMessage): boolean => {
     ?.trim() || req.socket.remoteAddress || 'unknown';
   const now = Date.now();
   const recent = (RATE_LIMIT.get(ip) || []).filter((timestamp) => now - timestamp < 60_000);
-  if (recent.length >= 90) {
+  if (recent.length >= 300) {
     RATE_LIMIT.set(ip, recent);
     return true;
   }
@@ -286,7 +286,7 @@ const streamAudio = async (
   res: ServerResponse,
   videoId: string,
   isHeadRequest: boolean,
-  sourceOverride?: { url: string; mimeType: string },
+  sourceOverride?: { url: string; mimeType: string; isGoogleVideo: boolean },
 ) => {
   let audio: ResolvedAudio = sourceOverride
     ? {
@@ -299,7 +299,7 @@ const streamAudio = async (
         format: sourceOverride.mimeType.includes('webm') ? 'WEBM' : 'M4A',
         bitrate: 0,
         quality: '',
-        instanceBase: 'innertube',
+        instanceBase: sourceOverride.isGoogleVideo ? 'innertube' : 'provider-proxy',
         expiresAt: Date.now() + CACHE_TTL_MS,
       }
     : await resolveAudio(videoId);
@@ -436,12 +436,18 @@ export default async function handler(req: ApiRequest, res: ServerResponse) {
       const source = new URL(sourceParam);
       const host = source.hostname.toLowerCase();
       const isGoogleVideo = host === 'googlevideo.com' || host.endsWith('.googlevideo.com');
+      const configuredProviderHosts = [...getPipedInstances(), ...getInvidiousInstances()]
+        .map((instance) => new URL(instance).hostname.toLowerCase());
+      const isConfiguredProvider = configuredProviderHosts.some((providerHost) =>
+        host === providerHost || host.endsWith(`.${providerHost}`),
+      );
       const mimeType = (requestUrl.searchParams.get('mime') || 'audio/mp4').split(';')[0].trim().toLowerCase();
-      if (source.protocol !== 'https:' || !isGoogleVideo || (!mimeType.startsWith('audio/') && mimeType !== 'application/octet-stream')) {
+      if (source.protocol !== 'https:' || (!isGoogleVideo && !isConfiguredProvider) ||
+          (!mimeType.startsWith('audio/') && mimeType !== 'application/octet-stream')) {
         sendJson(res, 400, { error: 'Invalid audio proxy source.' });
         return;
       }
-      sourceOverride = { url: source.toString(), mimeType };
+      sourceOverride = { url: source.toString(), mimeType, isGoogleVideo };
     } catch {
       sendJson(res, 400, { error: 'Invalid audio proxy source URL.' });
       return;
@@ -458,9 +464,15 @@ export default async function handler(req: ApiRequest, res: ServerResponse) {
     const directHost = new URL(audio.directUrl).hostname.toLowerCase();
     const needsHeaderProxy = directHost.endsWith('googlevideo.com') || audio.instanceBase === 'innertube';
     const isGoogleVideo = directHost === 'googlevideo.com' || directHost.endsWith('.googlevideo.com');
-    // Keep the exact signed URL for ranged proxy requests. Only googlevideo
-    // hosts are accepted by the source override handler (SSRF protection).
-    const proxyStreamUrl = isGoogleVideo
+    const configuredProviderHosts = [...getPipedInstances(), ...getInvidiousInstances()]
+      .map((instance) => new URL(instance).hostname.toLowerCase());
+    const canPinProxySource = isGoogleVideo || configuredProviderHosts.some((providerHost) =>
+      directHost === providerHost || directHost.endsWith(`.${providerHost}`),
+    );
+    // Keep the exact signed URL for ranged proxy requests when the source is
+    // from a trusted provider. This avoids re-resolving a different stream
+    // between chunks and only permits configured provider/googlevideo hosts.
+    const proxyStreamUrl = canPinProxySource
       ? `/api/youtube-audio?id=${encodeURIComponent(videoId)}&stream=1&source=${encodeURIComponent(audio.directUrl)}&mime=${encodeURIComponent(audio.mimeType)}`
       : `/api/youtube-audio?id=${encodeURIComponent(videoId)}&stream=1`;
     const streamUrl = needsHeaderProxy ? proxyStreamUrl : audio.directUrl;
