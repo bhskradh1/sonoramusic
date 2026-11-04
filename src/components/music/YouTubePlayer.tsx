@@ -167,26 +167,28 @@ export const YouTubePlayer = forwardRef<any, YouTubePlayerProps>(({
   }, [videoId]);
 
   useEffect(() => {
-    if (playerRef.current) {
-      if (isPlaying) {
-        console.log('Playing video');
-        try {
-          playerRef.current.playVideo();
-          console.log('Play command sent');
-        } catch (error) {
-          console.error('Error playing video:', error);
-        }
-      } else {
-        console.log('Pausing video');
-        try {
-          playerRef.current.pauseVideo();
-          console.log('Pause command sent');
-        } catch (error) {
-          console.error('Error pausing video:', error);
-        }
+    if (!playerRef.current || !isReady) return;
+
+    if (isPlaying) {
+      console.log('Playing video');
+      try {
+        playerRef.current.playVideo();
+        startTimeTracking();
+        console.log('Play command sent');
+      } catch (error) {
+        console.error('Error playing video:', error);
+      }
+    } else {
+      console.log('Pausing video');
+      try {
+        playerRef.current.pauseVideo();
+        stopTimeTracking();
+        console.log('Pause command sent');
+      } catch (error) {
+        console.error('Error pausing video:', error);
       }
     }
-  }, [isPlaying]);
+  }, [isPlaying, isReady]);
 
   return (
     <div 

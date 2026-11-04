@@ -725,7 +725,28 @@ export const MusicPlayer: React.FC<MusicPlayerProps> = ({
   const displayedDuration = useNativeAudio
     ? nativeDuration
     : (useYoutubeStream ? youtubeAudio.duration : duration);
-  const activeIsLoading = useNativeAudio ? isLoading : (useYoutubeStream ? youtubeAudio.isLoading : isLoading);
+  // Check the actual browser playback engine before showing a loading spinner.
+  // Some audio providers keep emitting "waiting" after playback has already resumed.
+  const htmlAudio = youtubeAudio.audioRef.current;
+  const streamedAudioIsPlaying = Boolean(
+    useYoutubeStream &&
+    htmlAudio &&
+    !htmlAudio.paused &&
+    !htmlAudio.ended &&
+    htmlAudio.readyState >= 2
+  );
+  let youtubeIframeIsPlaying = false;
+  if (!useNativeAudio && !useYoutubeStream && typeof playerRef.current?.getPlayerState === 'function') {
+    try {
+      youtubeIframeIsPlaying = playerRef.current.getPlayerState() === 1;
+    } catch {
+      // Keep the loading state if the player API is not ready.
+    }
+  }
+  const mediaEngineIsPlaying = streamedAudioIsPlaying || youtubeIframeIsPlaying;
+  const activeIsLoading = useNativeAudio
+    ? isLoading
+    : (mediaEngineIsPlaying ? false : (useYoutubeStream ? youtubeAudio.isLoading : isLoading));
   const progressPercentage = displayedDuration > 0 ? (displayedCurrentTime / displayedDuration) * 100 : 0;
 
   const formatTime = (seconds: number) => {
