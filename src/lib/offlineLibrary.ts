@@ -50,6 +50,9 @@ export interface PlaylistDownloadProgress {
 export interface PlaylistDownloadResult {
   downloaded: number;
   skipped: boolean;
+  /** Titles that could not be fetched; run the download again to retry them. */
+  failed: string[];
+  firstError?: string;
 }
 
 const DB_NAME = 'melodiya_offline_library';
@@ -272,67 +275,118 @@ export const downloadPlaylistOffline = async (
       existing.playlist_name === playlistName
     );
   });
-  if (alreadyDownloaded) return { downloaded: 0, skipped: true };
+  if (alreadyDownloaded) return { downloaded: 0, skipped: true, failed: [] };
 
   await requestPersistentStorage();
-  await removePlaylistRecords(playlistId, false);
   const downloadedAt = new Date().toISOString();
+  const wantedIds = new Set(tracks.map((t) => t.trackId));
+  const failed: string[] = [];
+  let firstError: string | undefined;
   let completed = 0;
 
-  try {
-    for (const [trackIndex, track] of tracks.entries()) {
-      if (!/^[a-zA-Z0-9_-]{11}$/.test(track.videoId)) {
-        throw new Error(`“${track.title}” does not have a valid YouTube video ID.`);
-      }
-      onProgress?.({ completed, total: tracks.length, currentTitle: track.title });
-      const [blob, thumbnail] = await Promise.all([
-        fetchYoutubeAudioBlob(track.videoId),
-        thumbnailAsBase64(track.thumbnailUrl),
-      ]);
-      const record: OfflineTrackRecord = {
-        playlist_id: playlistId,
-        playlist_name: playlistName,
-        playlist_track_count: tracks.length,
-        track_id: track.trackId,
-        track_position: trackIndex,
-        video_id: track.videoId,
-        title: track.title,
-        artist: track.artist || 'Unknown Artist',
-        duration: String(track.duration ?? ''),
-        thumbnail_base64: thumbnail,
-        blob,
-        mime_type: blob.type || 'application/octet-stream',
-        byte_size: blob.size,
-        downloaded_at: downloadedAt,
-        is_complete: false,
-      };
-      const db = await openDatabase();
-      const tx = db.transaction(STORE_NAME, 'readwrite');
-      tx.objectStore(STORE_NAME).put(record);
-      await transactionDone(tx);
-      completed += 1;
-      onProgress?.({ completed, total: tracks.length, currentTitle: track.title });
-    }
-
-    // Publish the playlist only after every track has been downloaded and stored.
+  // Drop records that are no longer part of the playlist; keep the rest so a
+  // retry only fetches what is missing.
+  {
     const db = await openDatabase();
     const tx = db.transaction(STORE_NAME, 'readwrite');
     const store = tx.objectStore(STORE_NAME);
-    const cursorRequest = store.index('playlist_id').openCursor(IDBKeyRange.only(playlistId));
-    cursorRequest.onsuccess = () => {
-      const cursor = cursorRequest.result;
-      if (!cursor) return;
-      const record = cursor.value as OfflineTrackRecord;
-      cursor.update({ ...record, is_complete: true });
-      cursor.continue();
-    };
+    for (const record of existingRecords) {
+      const track = tracks.find((t) => t.trackId === record.track_id);
+      if (!wantedIds.has(record.track_id) || track?.videoId !== record.video_id || !record.blob?.size) {
+        store.delete([record.playlist_id, record.track_id]);
+      }
+    }
     await transactionDone(tx);
-    emitUpdate();
-    return { downloaded: completed, skipped: false };
-  } catch (error) {
-    await removePlaylistRecords(playlistId, false).catch(() => undefined);
-    throw error;
   }
+  const kept = new Map(
+    (await getOfflinePlaylistRecords(playlistId)).map((record) => [record.track_id, record]),
+  );
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  for (const [trackIndex, track] of tracks.entries()) {
+    onProgress?.({ completed, total: tracks.length, currentTitle: track.title });
+
+    if (!/^[a-zA-Z0-9_-]{11}$/.test(track.videoId)) {
+      failed.push(track.title);
+      firstError ??= `“${track.title}” does not have a valid YouTube video ID.`;
+      continue;
+    }
+
+    const existing = kept.get(track.trackId);
+    if (existing?.blob?.size) {
+      // Already stored by an earlier attempt: refresh metadata only.
+      const tx = (await openDatabase()).transaction(STORE_NAME, 'readwrite');
+      tx.objectStore(STORE_NAME).put({
+        ...existing,
+        playlist_name: playlistName,
+        playlist_track_count: tracks.length,
+        track_position: trackIndex,
+        downloaded_at: downloadedAt,
+        is_complete: true,
+      });
+      await transactionDone(tx);
+      completed += 1;
+      onProgress?.({ completed, total: tracks.length, currentTitle: track.title });
+      continue;
+    }
+
+    let blob: Blob | null = null;
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 3 && !blob; attempt += 1) {
+      try {
+        blob = await fetchYoutubeAudioBlob(track.videoId);
+      } catch (error) {
+        lastError = error;
+        if (attempt < 2) await sleep(1200 * (attempt + 1));
+      }
+    }
+    if (!blob) {
+      failed.push(track.title);
+      firstError ??= lastError instanceof Error ? lastError.message : 'Audio download failed.';
+      continue;
+    }
+
+    const thumbnail = await thumbnailAsBase64(track.thumbnailUrl);
+    const record: OfflineTrackRecord = {
+      playlist_id: playlistId,
+      playlist_name: playlistName,
+      playlist_track_count: tracks.length,
+      track_id: track.trackId,
+      track_position: trackIndex,
+      video_id: track.videoId,
+      title: track.title,
+      artist: track.artist || 'Unknown Artist',
+      duration: String(track.duration ?? ''),
+      thumbnail_base64: thumbnail,
+      blob,
+      mime_type: blob.type || 'application/octet-stream',
+      byte_size: blob.size,
+      downloaded_at: downloadedAt,
+      // Each finished track is playable immediately; a failed track never
+      // discards the ones that were saved.
+      is_complete: true,
+    };
+    try {
+      const tx = (await openDatabase()).transaction(STORE_NAME, 'readwrite');
+      tx.objectStore(STORE_NAME).put(record);
+      await transactionDone(tx);
+    } catch (error) {
+      failed.push(track.title);
+      firstError ??= error instanceof Error
+        ? `Could not save “${track.title}” (storage may be full): ${error.message}`
+        : 'Could not write to device storage.';
+      continue;
+    }
+    completed += 1;
+    onProgress?.({ completed, total: tracks.length, currentTitle: track.title });
+    emitUpdate();
+  }
+
+  emitUpdate();
+  if (completed === 0) {
+    throw new Error(firstError || 'No tracks could be downloaded.');
+  }
+  return { downloaded: completed, skipped: false, failed, firstError };
 };
 
 export const clearOfflineLibrary = async (): Promise<void> => {
