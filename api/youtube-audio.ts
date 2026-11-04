@@ -30,7 +30,7 @@ const VIDEO_ID_PATTERN = /^[a-zA-Z0-9_-]{11}$/;
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
 const CACHE_TTL_MS = 3 * 60 * 1000;
-const UPSTREAM_TIMEOUT_MS = 5_000;
+const UPSTREAM_TIMEOUT_MS = 12_000;
 const STREAM_CONNECT_TIMEOUT_MS = 15_000;
 const AUDIO_CACHE = new Map<string, ResolvedAudio>();
 const RATE_LIMIT = new Map<string, number[]>();
@@ -38,22 +38,39 @@ const RATE_LIMIT = new Map<string, number[]>();
 // Public Piped / Invidious instances are best-effort upstreams and are often
 // blocked by YouTube. Override with env vars (comma-separated base URLs):
 //   YOUTUBE_AUDIO_PIPED_INSTANCES, YOUTUBE_AUDIO_INVIDIOUS_INSTANCES
+// Keep this fallback pool aligned with the public instance directories.
+// Public instances can still fail or rate-limit, so every configured/default
+// host is tried concurrently and the first usable stream wins.
 const DEFAULT_PIPED_INSTANCES = [
-  'https://api.piped.private.coffee',
-  'https://pipedapi.ducks.party',
   'https://pipedapi.kavin.rocks',
   'https://pipedapi.leptons.xyz',
+  'https://pipedapi.nosebs.ru',
   'https://pipedapi.adminforge.de',
+  'https://pipedapi.ducks.party',
+  'https://api.piped.private.coffee',
+  'https://pipedapi.drgns.space',
+  'https://pipedapi.owo.si',
+  'https://piped-api.codespace.cz',
+  'https://pipedapi.reallyaweso.me',
+  'https://pipedapi.darkness.services',
+  'https://pipedapi.orangenet.cc',
 ];
 const DEFAULT_INVIDIOUS_INSTANCES = [
-  'https://yewtu.be',
-  'https://invidious.nerdvpn.de',
   'https://inv.nadeko.net',
+  'https://invidious.nerdvpn.de',
+  'https://yt.chocolatemoo53.com',
+  'https://invidious.tiekoetter.com',
+  'https://invidious.f5.si',
 ];
 
 const parseList = (value: string | undefined, fallback: string[]): string[] => {
-  const list = value?.split(',').map((v) => v.trim().replace(/\/$/, '')).filter(Boolean);
-  return list?.length ? list : fallback;
+  const configured = (value || '')
+    .split(',')
+    .map((v) => v.trim().replace(/\/$/, ''))
+    .filter(Boolean);
+  // Merge rather than replace: stale environment settings must not remove
+  // every maintained fallback instance from the resolver pool.
+  return [...new Set([...configured, ...fallback])];
 };
 const getPipedInstances = () => parseList(process.env.YOUTUBE_AUDIO_PIPED_INSTANCES, DEFAULT_PIPED_INSTANCES);
 const getInvidiousInstances = () => parseList(process.env.YOUTUBE_AUDIO_INVIDIOUS_INSTANCES, DEFAULT_INVIDIOUS_INSTANCES);
@@ -429,7 +446,7 @@ export default async function handler(req: ApiRequest, res: ServerResponse) {
     return;
   }
 
-  let sourceOverride: { url: string; mimeType: string } | undefined;
+  let sourceOverride: { url: string; mimeType: string; isGoogleVideo: boolean } | undefined;
   const sourceParam = requestUrl.searchParams.get('source');
   if (shouldStream && sourceParam) {
     try {
