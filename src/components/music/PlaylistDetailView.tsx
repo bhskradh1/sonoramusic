@@ -7,6 +7,7 @@ import { useToast } from '@/hooks/use-toast';
 import {
   OFFLINE_UPDATED_EVENT,
   downloadPlaylistOffline,
+  getOfflinePlaylistRecords,
   isPlaylistDownloaded,
   removePlaylistOffline,
 } from '@/lib/offlineLibrary';
@@ -56,38 +57,13 @@ export const PlaylistDetailView: React.FC<PlaylistDetailViewProps> = ({
   const [songs, setSongs] = useState<PlaylistSong[]>([]);
   const [loading, setLoading] = useState(true);
   const [isOfflineDownloaded, setIsOfflineDownloaded] = useState(false);
+  const [offlineSavedCount, setOfflineSavedCount] = useState(0);
   const [isDownloading, setIsDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState({ completed: 0, total: 0, currentTitle: '' });
   const { toast } = useToast();
 
-  const refreshOfflineStatus = useCallback(async () => {
-    if (!playlistId) return;
+  const fetchPlaylistDetails = useCallback(async () => {
     try {
-      setIsOfflineDownloaded(await isPlaylistDownloaded(
-        playlistId,
-        songs.map((song) => ({ trackId: song.id, videoId: song.youtube_video_id })),
-      ));
-    } catch (error) {
-      console.warn('Could not check playlist offline status:', error);
-    }
-  }, [playlistId, songs.length]);
-
-  useEffect(() => {
-    if (playlistId) {
-      setLoading(true);
-      fetchPlaylistDetails();
-      void refreshOfflineStatus();
-    }
-  }, [playlistId, refreshOfflineStatus]);
-
-  useEffect(() => {
-    window.addEventListener(OFFLINE_UPDATED_EVENT, refreshOfflineStatus);
-    return () => window.removeEventListener(OFFLINE_UPDATED_EVENT, refreshOfflineStatus);
-  }, [refreshOfflineStatus]);
-
-  const fetchPlaylistDetails = async () => {
-    try {
-      // Fetch playlist info
       const { data: playlistData, error: playlistError } = await supabase
         .from('playlists')
         .select('*')
@@ -97,7 +73,6 @@ export const PlaylistDetailView: React.FC<PlaylistDetailViewProps> = ({
       if (playlistError) throw playlistError;
       setPlaylist(playlistData);
 
-      // Fetch playlist songs
       const { data: songsData, error: songsError } = await supabase
         .from('playlist_songs')
         .select('*')
@@ -116,7 +91,52 @@ export const PlaylistDetailView: React.FC<PlaylistDetailViewProps> = ({
     } finally {
       setLoading(false);
     }
-  };
+  }, [playlistId, toast]);
+
+  const refreshOfflineStatus = useCallback(async () => {
+    if (!playlistId) return;
+    try {
+      const expectedTracks = songs.map((song) => ({
+        trackId: song.id,
+        videoId: song.youtube_video_id,
+      }));
+      const [records, complete] = await Promise.all([
+        getOfflinePlaylistRecords(playlistId),
+        isPlaylistDownloaded(playlistId, expectedTracks),
+      ]);
+      const savedById = new Map(
+        records
+          .filter((record) => record.is_complete && Boolean(record.blob?.size))
+          .map((record) => [record.track_id, record.video_id]),
+      );
+      const savedCount = expectedTracks.filter(
+        (track) => savedById.get(track.trackId) === track.videoId,
+      ).length;
+      setOfflineSavedCount(savedCount);
+      setIsOfflineDownloaded(complete);
+    } catch (error) {
+      console.warn('Could not check playlist offline status:', error);
+    }
+  }, [playlistId, songs]);
+
+  useEffect(() => {
+    if (!playlistId) return;
+    setLoading(true);
+    setPlaylist(null);
+    setSongs([]);
+    setOfflineSavedCount(0);
+    setIsOfflineDownloaded(false);
+    void fetchPlaylistDetails();
+  }, [playlistId, fetchPlaylistDetails]);
+
+  useEffect(() => {
+    void refreshOfflineStatus();
+  }, [refreshOfflineStatus]);
+
+  useEffect(() => {
+    window.addEventListener(OFFLINE_UPDATED_EVENT, refreshOfflineStatus);
+    return () => window.removeEventListener(OFFLINE_UPDATED_EVENT, refreshOfflineStatus);
+  }, [refreshOfflineStatus]);
 
   const playSong = (song: PlaylistSong) => {
     // Convert all songs to tracks and pass as playlist, starting from clicked song
@@ -153,6 +173,7 @@ export const PlaylistDetailView: React.FC<PlaylistDetailViewProps> = ({
       );
       const partial = result.failed.length > 0;
       setIsOfflineDownloaded(!partial);
+      setOfflineSavedCount(result.downloaded);
       toast({
         title: partial
           ? `Downloaded ${result.downloaded} of ${songs.length} tracks`
@@ -182,6 +203,7 @@ export const PlaylistDetailView: React.FC<PlaylistDetailViewProps> = ({
     try {
       await removePlaylistOffline(playlistId);
       setIsOfflineDownloaded(false);
+      setOfflineSavedCount(0);
       toast({ title: 'Offline download removed', description: `“${playlist?.name || 'Playlist'}” was removed from this device.` });
     } catch (error) {
       toast({
@@ -333,11 +355,15 @@ export const PlaylistDetailView: React.FC<PlaylistDetailViewProps> = ({
               Saving {downloadProgress.currentTitle || 'playlist audio'} · {downloadProgress.completed} of {downloadProgress.total || songs.length}
             </p>
           )}
-          {isOfflineDownloaded && (
+          {isOfflineDownloaded ? (
             <p className="flex items-center gap-2 text-xs text-emerald-500">
               <CheckCircle2 className="h-3.5 w-3.5" /> All {songs.length} tracks are stored on this device.
             </p>
-          )}
+          ) : offlineSavedCount > 0 ? (
+            <p className="text-xs text-amber-500">
+              {offlineSavedCount} of {songs.length} tracks are saved on this device. Download again to retry the missing tracks.
+            </p>
+          ) : null}
         </div>
       </div>
 

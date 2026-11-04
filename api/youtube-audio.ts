@@ -257,14 +257,8 @@ const resolveAudio = async (videoId: string, forceRefresh = false): Promise<Reso
     return resolved;
   };
 
-  // 1) Direct extraction first: it is the fastest and most reliable source here.
-  try {
-    return store(await withTimeout(resolveViaInnertube(videoId), 20_000, 'innertube'));
-  } catch (error) {
-    errors.push(`innertube: ${error instanceof Error ? error.message : 'error'}`);
-  }
-
-  // 2) Public Piped / Invidious instances, all at once; first success wins.
+  // Prefer Piped/Invidious first. Their CDN URLs can be fetched directly by
+  // the browser, avoiding a long-running Vercel proxy for full playlist songs.
   const racers: Array<Promise<ResolvedAudio>> = [
     ...getPipedInstances().map((b) =>
       resolveViaPiped(videoId, b).catch((e) => { errors.push(`${b.replace('https://', '')}: ${e instanceof Error ? e.message : 'error'}`); throw e; })),
@@ -274,8 +268,16 @@ const resolveAudio = async (videoId: string, forceRefresh = false): Promise<Reso
   try {
     return store(await Promise.any(racers));
   } catch {
-    /* all failed; errors already collected */
+    /* Fall back to Innertube if every public provider is unavailable. */
   }
+
+  // Innertube's googlevideo URLs are IP-bound; use the API's ranged proxy.
+  try {
+    return store(await withTimeout(resolveViaInnertube(videoId), 20_000, 'innertube'));
+  } catch (error) {
+    errors.push(`innertube: ${error instanceof Error ? error.message : 'error'}`);
+  }
+
   throw new Error(`Unable to resolve an audio stream. ${errors.slice(0, 8).join(' | ')}`);
 };
 
@@ -284,8 +286,23 @@ const streamAudio = async (
   res: ServerResponse,
   videoId: string,
   isHeadRequest: boolean,
+  sourceOverride?: { url: string; mimeType: string },
 ) => {
-  let audio = await resolveAudio(videoId);
+  let audio: ResolvedAudio = sourceOverride
+    ? {
+        videoId,
+        title: '',
+        uploader: '',
+        duration: 0,
+        directUrl: sourceOverride.url,
+        mimeType: sourceOverride.mimeType,
+        format: sourceOverride.mimeType.includes('webm') ? 'WEBM' : 'M4A',
+        bitrate: 0,
+        quality: '',
+        instanceBase: 'innertube',
+        expiresAt: Date.now() + CACHE_TTL_MS,
+      }
+    : await resolveAudio(videoId);
   const range = req.headers.range;
   const createUpstreamRequest = async (resolved: ResolvedAudio) => {
     const controller = new AbortController();
@@ -320,7 +337,7 @@ const streamAudio = async (
   };
 
   let upstream = await createUpstreamRequest(audio);
-  if ((upstream.status === 403 || upstream.status === 404 || upstream.status >= 500) && !req.destroyed) {
+  if (!sourceOverride && (upstream.status === 403 || upstream.status === 404 || upstream.status >= 500) && !req.destroyed) {
     // Expiring upstream signatures occasionally go stale before the short
     // cache window; resolve once more against the current Piped instance pool.
     audio = await resolveAudio(videoId, true);
@@ -412,21 +429,41 @@ export default async function handler(req: ApiRequest, res: ServerResponse) {
     return;
   }
 
+  let sourceOverride: { url: string; mimeType: string } | undefined;
+  const sourceParam = requestUrl.searchParams.get('source');
+  if (shouldStream && sourceParam) {
+    try {
+      const source = new URL(sourceParam);
+      const host = source.hostname.toLowerCase();
+      const isGoogleVideo = host === 'googlevideo.com' || host.endsWith('.googlevideo.com');
+      const mimeType = (requestUrl.searchParams.get('mime') || 'audio/mp4').split(';')[0].trim().toLowerCase();
+      if (source.protocol !== 'https:' || !isGoogleVideo || (!mimeType.startsWith('audio/') && mimeType !== 'application/octet-stream')) {
+        sendJson(res, 400, { error: 'Invalid audio proxy source.' });
+        return;
+      }
+      sourceOverride = { url: source.toString(), mimeType };
+    } catch {
+      sendJson(res, 400, { error: 'Invalid audio proxy source URL.' });
+      return;
+    }
+  }
+
   try {
     if (shouldStream) {
-      await streamAudio(req, res, videoId, req.method === 'HEAD');
+      await streamAudio(req, res, videoId, req.method === 'HEAD', sourceOverride);
       return;
     }
 
     const audio = await resolveAudio(videoId);
-    const proxyStreamUrl = `/api/youtube-audio?id=${encodeURIComponent(videoId)}&stream=1`;
     const directHost = new URL(audio.directUrl).hostname.toLowerCase();
-    // Public Piped CDN URLs already provide CORS and byte-range support.
-    // Play those directly so a serverless function does not stay open for an
-    // entire song. Use our header-aware proxy only for raw Google Video URLs.
-    const streamUrl = directHost.endsWith('googlevideo.com') || audio.instanceBase === 'innertube'
-      ? proxyStreamUrl
-      : audio.directUrl;
+    const needsHeaderProxy = directHost.endsWith('googlevideo.com') || audio.instanceBase === 'innertube';
+    const isGoogleVideo = directHost === 'googlevideo.com' || directHost.endsWith('.googlevideo.com');
+    // Keep the exact signed URL for ranged proxy requests. Only googlevideo
+    // hosts are accepted by the source override handler (SSRF protection).
+    const proxyStreamUrl = isGoogleVideo
+      ? `/api/youtube-audio?id=${encodeURIComponent(videoId)}&stream=1&source=${encodeURIComponent(audio.directUrl)}&mime=${encodeURIComponent(audio.mimeType)}`
+      : `/api/youtube-audio?id=${encodeURIComponent(videoId)}&stream=1`;
+    const streamUrl = needsHeaderProxy ? proxyStreamUrl : audio.directUrl;
     const metadata = {
       videoId,
       title: audio.title,

@@ -35,7 +35,12 @@ export interface PlaylistDownloadTrack {
 export interface OfflinePlaylistSummary {
   playlistId: string;
   playlistName: string;
+  /** Number of audio files currently stored on this device. */
   trackCount: number;
+  /** Expected number of tracks in the source playlist at last download. */
+  expectedTrackCount: number;
+  /** True only when every expected playlist track has a non-empty audio Blob. */
+  isComplete: boolean;
   downloadedAt: string;
   cover: string;
   tracks: OfflineTrackRecord[];
@@ -161,7 +166,7 @@ export const getAllOfflineTracks = async (): Promise<OfflineTrackRecord[]> => {
   const tx = db.transaction(STORE_NAME, 'readonly');
   const result = await requestValue(tx.objectStore(STORE_NAME).getAll()) as OfflineTrackRecord[];
   await transactionDone(tx);
-  return result.filter((track) => track.is_complete);
+  return result.filter((track) => track.is_complete && Boolean(track.blob?.size));
 };
 
 export const getOfflineTrack = async (
@@ -179,7 +184,7 @@ export const getOfflineTrack = async (
     result = matches.find((track) => track.is_complete);
   }
   await transactionDone(tx);
-  return result?.is_complete ? result : undefined;
+  return result?.is_complete && result.blob?.size ? result : undefined;
 };
 
 export const getOfflinePlaylistRecords = async (playlistId: string): Promise<OfflineTrackRecord[]> => {
@@ -203,10 +208,20 @@ export const getOfflinePlaylistSummaries = async (): Promise<OfflinePlaylistSumm
   return [...grouped.entries()].map(([playlistId, tracks]) => {
     tracks.sort((a, b) => a.track_position - b.track_position);
     const first = tracks[0];
+    const expectedTrackCount = Math.max(
+      tracks.length,
+      ...tracks.map((track) => Number(track.playlist_track_count) || 0),
+    );
+    const isComplete = expectedTrackCount > 0 &&
+      tracks.length === expectedTrackCount &&
+      tracks.every((track) => track.is_complete && Boolean(track.blob?.size));
+
     return {
       playlistId,
       playlistName: first.playlist_name,
       trackCount: tracks.length,
+      expectedTrackCount,
+      isComplete,
       downloadedAt: first.downloaded_at,
       cover: first.thumbnail_base64,
       tracks,
@@ -228,13 +243,14 @@ export const isPlaylistDownloaded = async (
   ) as OfflineTrackRecord[];
   await transactionDone(tx);
 
-  if (!matches.length || !matches.every((track) => track.is_complete)) return false;
+  if (!matches.length || !matches.every((track) => track.is_complete && Boolean(track.blob?.size))) return false;
   if (expectedTracks) {
     if (matches.length !== expectedTracks.length || expectedTracks.length === 0) return false;
     const savedById = new Map(matches.map((track) => [track.track_id, track.video_id]));
     return expectedTracks.every((track) => savedById.get(track.trackId) === track.videoId);
   }
-  return true;
+  const expectedCount = Math.max(...matches.map((track) => Number(track.playlist_track_count) || 0));
+  return expectedCount > 0 && matches.length === expectedCount;
 };
 
 const removePlaylistRecords = async (playlistId: string, notify = true) => {
@@ -271,6 +287,7 @@ export const downloadPlaylistOffline = async (
     const existing = existingById.get(track.trackId);
     return Boolean(
       existing?.is_complete &&
+      Boolean(existing.blob?.size) &&
       existing.video_id === track.videoId &&
       existing.playlist_name === playlistName
     );
@@ -292,7 +309,7 @@ export const downloadPlaylistOffline = async (
     const store = tx.objectStore(STORE_NAME);
     for (const record of existingRecords) {
       const track = tracks.find((t) => t.trackId === record.track_id);
-      if (!wantedIds.has(record.track_id) || track?.videoId !== record.video_id || !record.blob?.size) {
+      if (!wantedIds.has(record.track_id) || track?.videoId !== record.video_id || !record.is_complete || !record.blob?.size) {
         store.delete([record.playlist_id, record.track_id]);
       }
     }

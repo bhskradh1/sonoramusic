@@ -90,7 +90,7 @@ export const OfflineLibraryView: React.FC<OfflineLibraryViewProps> = ({ onPlayTr
           <p className="mb-1 text-[10px] font-semibold uppercase tracking-[.22em] text-muted-foreground">No connection</p>
           <h1 className="text-3xl font-medium tracking-[-.045em] text-zinc-100 md:text-4xl">Offline Library</h1>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-            Only playlists fully downloaded to this device are shown here.
+            Saved audio is available here. Partial downloads can play saved tracks; reconnect and download again to fill in missing tracks.
           </p>
         </div>
       </header>
@@ -122,12 +122,16 @@ export const OfflineLibraryView: React.FC<OfflineLibraryViewProps> = ({ onPlayTr
                   />
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
-                      <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-500" />
-                      <span className="text-[10px] font-semibold uppercase tracking-[.18em] text-emerald-500">Downloaded</span>
+                      {playlist.isComplete
+                        ? <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-500" />
+                        : <HardDriveDownload className="h-4 w-4 shrink-0 text-amber-500" />}
+                      <span className={`text-[10px] font-semibold uppercase tracking-[.18em] ${playlist.isComplete ? 'text-emerald-500' : 'text-amber-500'}`}>
+                        {playlist.isComplete ? 'Downloaded' : 'Partial download'}
+                      </span>
                     </div>
                     <h2 className="mt-1 truncate text-lg font-semibold text-zinc-100">{playlist.playlistName}</h2>
                     <p className="mt-1 text-xs text-muted-foreground">
-                      {playlist.trackCount} tracks · Saved {new Date(playlist.downloadedAt).toLocaleDateString()}
+                      {playlist.trackCount} of {playlist.expectedTrackCount} tracks saved · {new Date(playlist.downloadedAt).toLocaleDateString()}
                     </p>
                   </div>
                   <div className="flex shrink-0 flex-wrap gap-2">
