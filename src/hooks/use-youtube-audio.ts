@@ -83,6 +83,7 @@ export const useYoutubeAudio = (
   const isPlayingRef = useRef(isPlaying);
   const nativeActiveRef = useRef(false);
   const lastNativePositionRef = useRef(0);
+  const lastAudioProgressRef = useRef(0);
   const onEndedRef = useRef(onEnded);
   const onPlaybackErrorRef = useRef(onPlaybackError);
   const [isLoading, setIsLoading] = useState(false);
@@ -98,7 +99,18 @@ export const useYoutubeAudio = (
     const audio = audioRef.current;
     if (!audio) return;
 
-    const updateTime = () => setCurrentTime(audio.currentTime || 0);
+    const updateTime = () => {
+      const nextTime = audio.currentTime || 0;
+      setCurrentTime(nextTime);
+
+      // A waiting event can fire during a stream without meaning playback is
+      // still stalled. Advancing media time is the reliable signal that audio
+      // has resumed, so never leave the player spinner on in that state.
+      if (!audio.paused && nextTime > lastAudioProgressRef.current + 0.05) {
+        setIsLoading(false);
+      }
+      lastAudioProgressRef.current = nextTime;
+    };
     const updateDuration = () => setDuration(Number.isFinite(audio.duration) ? audio.duration : 0);
     const handleLoading = () => setIsLoading(true);
     const handleReady = () => setIsLoading(false);
@@ -121,6 +133,7 @@ export const useYoutubeAudio = (
     audio.addEventListener('loadstart', handleLoading);
     audio.addEventListener('waiting', handleLoading);
     audio.addEventListener('canplay', handleReady);
+    audio.addEventListener('canplaythrough', handleReady);
     audio.addEventListener('playing', handleReady);
     audio.addEventListener('pause', handleReady);
     audio.addEventListener('ended', handleEnded);
@@ -133,6 +146,7 @@ export const useYoutubeAudio = (
       audio.removeEventListener('loadstart', handleLoading);
       audio.removeEventListener('waiting', handleLoading);
       audio.removeEventListener('canplay', handleReady);
+      audio.removeEventListener('canplaythrough', handleReady);
       audio.removeEventListener('playing', handleReady);
       audio.removeEventListener('pause', handleReady);
       audio.removeEventListener('ended', handleEnded);
@@ -209,6 +223,7 @@ export const useYoutubeAudio = (
     let objectUrl: string | null = null;
     nativeActiveRef.current = false;
     lastNativePositionRef.current = 0;
+    lastAudioProgressRef.current = 0;
     setIsLoading(true);
     setError(null);
     setCurrentTime(0);
