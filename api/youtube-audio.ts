@@ -265,17 +265,24 @@ const streamAudio = async (
     try {
       // Clear the timeout as soon as headers arrive. The body remains a live
       // stream for the full song duration rather than being cut off at 15s.
+      // URLs obtained through the iOS client expect an iOS-style request and
+      // are most reliable when fetched with an explicit byte range.
+      const viaInnertube = resolved.instanceBase === 'innertube';
       return await fetch(resolved.directUrl, {
         method: isHeadRequest ? 'HEAD' : 'GET',
-        headers: {
-          'User-Agent': USER_AGENT,
-          // Supply a YouTube referrer for instances that return direct
-          // googlevideo URLs; Piped's own proxy safely ignores these headers.
-          Referer: 'https://www.youtube.com/',
-          Origin: 'https://www.youtube.com',
-          Accept: 'audio/webm,audio/mp4,audio/*;q=0.9,*/*;q=0.5',
-          ...(range ? { Range: range } : {}),
-        },
+        headers: viaInnertube
+          ? {
+              'User-Agent': 'com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)',
+              Accept: '*/*',
+              Range: range || 'bytes=0-',
+            }
+          : {
+              'User-Agent': USER_AGENT,
+              Referer: 'https://www.youtube.com/',
+              Origin: 'https://www.youtube.com',
+              Accept: 'audio/webm,audio/mp4,audio/*;q=0.9,*/*;q=0.5',
+              ...(range ? { Range: range } : {}),
+            },
         redirect: 'follow',
         signal: controller.signal,
       });
