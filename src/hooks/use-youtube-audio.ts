@@ -139,7 +139,18 @@ export const useYoutubeAudio = (
     audio.addEventListener('ended', handleEnded);
     audio.addEventListener('error', handleError);
 
+    // Some stream providers do not emit regular timeupdate events. Poll the
+    // media element while it is actively playing so the visible timer and
+    // progress bar continue to move for those streams too.
+    const progressPoll = window.setInterval(() => {
+      if (!audio.paused && !audio.ended) {
+        updateTime();
+        updateDuration();
+      }
+    }, 250);
+
     return () => {
+      window.clearInterval(progressPoll);
       audio.removeEventListener('timeupdate', updateTime);
       audio.removeEventListener('durationchange', updateDuration);
       audio.removeEventListener('loadedmetadata', updateDuration);

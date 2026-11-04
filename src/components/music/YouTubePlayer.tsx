@@ -122,10 +122,14 @@ export const YouTubePlayer = forwardRef<any, YouTubePlayerProps>(({
     
     intervalRef.current = setInterval(() => {
       if (playerRef.current && typeof playerRef.current.getCurrentTime === 'function' && typeof playerRef.current.getDuration === 'function') {
-        const currentTime = playerRef.current.getCurrentTime();
-        const duration = playerRef.current.getDuration();
-        
-        if (duration > 0) {
+        const currentTime = Number(playerRef.current.getCurrentTime());
+        const rawDuration = Number(playerRef.current.getDuration());
+        const duration = Number.isFinite(rawDuration) && rawDuration > 0 ? rawDuration : 0;
+
+        // Publish the position even when duration metadata is not available
+        // yet. Gating on duration > 0 left the timer frozen at 0:00 on some
+        // YouTube iframe streams despite the player already producing audio.
+        if (Number.isFinite(currentTime) && currentTime >= 0) {
           onTimeUpdateRef.current?.(currentTime, duration);
         }
       }
