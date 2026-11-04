@@ -46,6 +46,8 @@ const DEFAULT_PIPED_INSTANCES = [
   'https://pipedapi.leptons.xyz',
   'https://pipedapi.nosebs.ru',
   'https://pipedapi.adminforge.de',
+  'https://piped-api.privacy.com.de',
+  'https://api.piped.yt',
   'https://pipedapi.ducks.party',
   'https://api.piped.private.coffee',
   'https://pipedapi.drgns.space',
@@ -60,7 +62,6 @@ const DEFAULT_INVIDIOUS_INSTANCES = [
   'https://invidious.nerdvpn.de',
   'https://yt.chocolatemoo53.com',
   'https://invidious.tiekoetter.com',
-  'https://invidious.f5.si',
 ];
 
 const parseList = (value: string | undefined, fallback: string[]): string[] => {
