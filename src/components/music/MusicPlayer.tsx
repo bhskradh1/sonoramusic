@@ -82,7 +82,6 @@ export const MusicPlayer: React.FC<MusicPlayerProps> = ({
   const prevTrackIdRef = useRef<string | null>(null);
   const previousNativeAudioUrlRef = useRef<string | null>(null);
   const lastNativeExternalPlayingRef = useRef<boolean | null>(null);
-  const lastNativePositionRef = useRef(0);
   const playerRef = useRef<any>(null);
   const desiredPlayingRef = useRef(isPlaying);
   desiredPlayingRef.current = isPlaying;
@@ -120,15 +119,6 @@ export const MusicPlayer: React.FC<MusicPlayerProps> = ({
       return false;
     }
   }, []);
-
-  // Reset native progress/loading state whenever the selected song changes.
-  // The Flutter bridge reports when the new source is ready and starts playing.
-  useEffect(() => {
-    lastNativePositionRef.current = 0;
-    setNativeCurrentTime(0);
-    setNativeDuration(0);
-    setIsLoading(Boolean(useNativeAudio));
-  }, [currentTrack?.videoId, useNativeAudio]);
 
   // The keep-alive layer remains active for browser/PWA playback, while the
   // selected catalogue track itself is played by the real audio element below.
@@ -413,12 +403,7 @@ export const MusicPlayer: React.FC<MusicPlayerProps> = ({
       if (!detail) return;
 
       if (detail.event === 'ended') {
-        setIsLoading(false);
         triggerNextTrack();
-        return;
-      }
-      if (detail.event === 'stopped') {
-        setIsLoading(false);
         return;
       }
       if (detail.event === 'error') {
@@ -432,21 +417,9 @@ export const MusicPlayer: React.FC<MusicPlayerProps> = ({
         return;
       }
 
-      let positionAdvanced = false;
-      if (typeof detail.position === 'number' && Number.isFinite(detail.position)) {
-        positionAdvanced = detail.position > lastNativePositionRef.current + 0.05;
-        lastNativePositionRef.current = detail.position;
-        setNativeCurrentTime(detail.position);
-      }
-      if (typeof detail.duration === 'number' && Number.isFinite(detail.duration)) {
-        setNativeDuration(detail.duration);
-      }
-
-      const nativeIsWaiting =
-        detail.processingState === 'loading' || detail.processingState === 'buffering';
-      // A few native engines report buffering after audio has resumed. When
-      // the playback position advances, the track is running: clear the spinner.
-      setIsLoading(nativeIsWaiting && !positionAdvanced);
+      if (typeof detail.position === 'number') setNativeCurrentTime(detail.position);
+      if (typeof detail.duration === 'number') setNativeDuration(detail.duration);
+      setIsLoading(detail.processingState === 'loading' || detail.processingState === 'buffering');
 
       if (detail.syncPlaying && typeof detail.playing === 'boolean') {
         if (detail.playing === isPlaying) {
@@ -725,28 +698,7 @@ export const MusicPlayer: React.FC<MusicPlayerProps> = ({
   const displayedDuration = useNativeAudio
     ? nativeDuration
     : (useYoutubeStream ? youtubeAudio.duration : duration);
-  // Check the actual browser playback engine before showing a loading spinner.
-  // Some audio providers keep emitting "waiting" after playback has already resumed.
-  const htmlAudio = youtubeAudio.audioRef.current;
-  const streamedAudioIsPlaying = Boolean(
-    useYoutubeStream &&
-    htmlAudio &&
-    !htmlAudio.paused &&
-    !htmlAudio.ended &&
-    htmlAudio.readyState >= 2
-  );
-  let youtubeIframeIsPlaying = false;
-  if (!useNativeAudio && !useYoutubeStream && typeof playerRef.current?.getPlayerState === 'function') {
-    try {
-      youtubeIframeIsPlaying = playerRef.current.getPlayerState() === 1;
-    } catch {
-      // Keep the loading state if the player API is not ready.
-    }
-  }
-  const mediaEngineIsPlaying = streamedAudioIsPlaying || youtubeIframeIsPlaying;
-  const activeIsLoading = useNativeAudio
-    ? isLoading
-    : (mediaEngineIsPlaying ? false : (useYoutubeStream ? youtubeAudio.isLoading : isLoading));
+  const activeIsLoading = useNativeAudio ? isLoading : (useYoutubeStream ? youtubeAudio.isLoading : isLoading);
   const progressPercentage = displayedDuration > 0 ? (displayedCurrentTime / displayedDuration) * 100 : 0;
 
   const formatTime = (seconds: number) => {
@@ -756,7 +708,17 @@ export const MusicPlayer: React.FC<MusicPlayerProps> = ({
   };
 
   if (!currentTrack) {
-    return null;
+    return (
+      <>
+      <audio
+        ref={youtubeAudio.audioRef}
+        className="hidden"
+        preload={offlineMode ? 'auto' : 'none'}
+        playsInline
+        aria-hidden="true"
+      />
+      </>
+    );
   }
 
   return (
